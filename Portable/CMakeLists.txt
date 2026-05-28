@@ -23,6 +23,8 @@ set(PORTABLE_MULTI_CONV_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/apps/multi_conv_benchmarking.cpp")
 set(PORTABLE_SOUND_DEVICE_QUERY_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/apps/sound_device_query.cpp")
+set(PORTABLE_SOUND_DEVICE_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/apps/sound_device_test.cpp")
 set(PORTABLE_INFER_TOPOLOGY_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/apps/infer_topology_and_save_it.cpp")
 set(PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_SOURCE
@@ -47,6 +49,7 @@ option(PORTABLE_ENABLE_CUDA_APPS
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${PORTABLE_MULTI_CONV_SOURCE}"
     "${PORTABLE_SOUND_DEVICE_QUERY_SOURCE}"
+    "${PORTABLE_SOUND_DEVICE_TEST_SOURCE}"
     "${PORTABLE_INFER_TOPOLOGY_SOURCE}"
     "${PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_SOURCE}"
     "${PORTABLE_DETECT_TIMMING_SOURCE}"
@@ -117,6 +120,7 @@ endfunction()
 
 portable_source_is_mock("${PORTABLE_MULTI_CONV_SOURCE}" PORTABLE_MULTI_CONV_IS_MOCK)
 portable_source_is_mock("${PORTABLE_SOUND_DEVICE_QUERY_SOURCE}" PORTABLE_SOUND_DEVICE_QUERY_IS_MOCK)
+portable_source_is_mock("${PORTABLE_SOUND_DEVICE_TEST_SOURCE}" PORTABLE_SOUND_DEVICE_TEST_IS_MOCK)
 portable_source_is_mock("${PORTABLE_INFER_TOPOLOGY_SOURCE}" PORTABLE_INFER_TOPOLOGY_IS_MOCK)
 portable_source_is_mock("${PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_SOURCE}" PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_IS_MOCK)
 portable_source_is_mock("${PORTABLE_DETECT_TIMMING_SOURCE}" PORTABLE_DETECT_TIMMING_IS_MOCK)
@@ -125,6 +129,7 @@ portable_source_is_mock("${PORTABLE_SIMPLE_CUDA_LESS_NAIVE_CONV_SOURCE}" PORTABL
 
 message(STATUS "portable_multi_conv_benchmarking: MOCK=${PORTABLE_MULTI_CONV_IS_MOCK}")
 message(STATUS "portable_sound_device_query: MOCK=${PORTABLE_SOUND_DEVICE_QUERY_IS_MOCK}")
+message(STATUS "portable_sound_device_test: MOCK=${PORTABLE_SOUND_DEVICE_TEST_IS_MOCK}")
 message(STATUS "portable_infer_topology_and_save_it: MOCK=${PORTABLE_INFER_TOPOLOGY_IS_MOCK}")
 message(STATUS "portable_infer_topology_from_infered_topology_and_save_it: MOCK=${PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_IS_MOCK}")
 message(STATUS "portable_detect_timming: MOCK=${PORTABLE_DETECT_TIMMING_IS_MOCK}")
@@ -134,6 +139,7 @@ message(STATUS "portable_simple_cuda_less_naive_convolution: MOCK=${PORTABLE_SIM
 set(PORTABLE_NEEDS_REAL_AUDIO FALSE)
 if(NOT PORTABLE_MULTI_CONV_IS_MOCK
    OR NOT PORTABLE_SOUND_DEVICE_QUERY_IS_MOCK
+   OR NOT PORTABLE_SOUND_DEVICE_TEST_IS_MOCK
    OR NOT PORTABLE_INFER_TOPOLOGY_IS_MOCK
    OR NOT PORTABLE_INFER_FROM_INFERRED_TOPOLOGY_IS_MOCK
    OR NOT PORTABLE_DETECT_TIMMING_IS_MOCK
@@ -192,6 +198,11 @@ portable_link_audio_backend(portable_sound_device_query ${PORTABLE_SOUND_DEVICE_
 target_compile_definitions(portable_sound_device_query PRIVATE
     PORTABLE_OUTPUT_DIR=\"${PORTABLE_OUTPUT_DIR_PATH}\"
     PORTABLE_PLOT_SCRIPT=\"${PORTABLE_PLOT_SCRIPT_PATH}\")
+
+add_executable(portable_sound_device_test
+    "${PORTABLE_SOUND_DEVICE_TEST_SOURCE}")
+target_include_directories(portable_sound_device_test PRIVATE "${PORTABLE_INCLUDE_DIR}")
+portable_link_audio_backend(portable_sound_device_test ${PORTABLE_SOUND_DEVICE_TEST_IS_MOCK})
 
 add_executable(portable_infer_topology_and_save_it
     "${PORTABLE_INFER_TOPOLOGY_SOURCE}")

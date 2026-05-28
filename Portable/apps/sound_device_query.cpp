@@ -5,19 +5,50 @@ Build from repo root:
   cmake --build Portable/build --target portable_sound_device_query
 
 Run:
-  ./Portable/build/portable_sound_device_query
+  Windows: Portable\build\portable_sound_device_query.exe
+  Linux:   ./Portable/build/portable_sound_device_query
 
-Important config is in this file:
+Important config:
   #define MOCK TRUE or FALSE
+  shared device config in portable/sound_device_query_config.h:
   #define DEVICE_NAME ...
   #define CHANNELS ...
   #define SAMPLE_RATE ...
   #define FRAMES_PER_BUFFER ...
+  #define SAMPLE_FORMAT ...
+  app-specific timing config in this file:
   #define PLAY_AND_LISTEN_SECONDS ...
   #define LISTEN_SECONDS ...
 
-This repo builds the real audio path with ALSA enabled and other Linux host
-APIs disabled, so non-MOCK mode uses ALSA through vendored PortAudio.
+Linux JACK experiment notes:
+  This repo currently sets PA_USE_JACK OFF on Linux in Portable/CMakeLists.txt,
+  so changing DEVICE_NAME alone will not move this app onto JACK. First enable
+  JACK in that CMake file, then rebuild.
+
+  If you want a real jackd server bound directly to the MADIface hardware, you
+  usually need PipeWire/WirePlumber to release hw:2,0 first:
+    systemctl --user stop pipewire pipewire-pulse wireplumber
+    killall pipewire wireplumber
+
+  Start a JACK server on the MADIface:
+    jackd -d alsa -d hw:2,0 -r 48000 -p 32 -n 20
+
+  Inspect JACK ports:
+    jack_lsp
+
+  For a JACK-enabled PortAudio build, DEVICE_NAME will usually be a JACK client
+  name such as "system", but verify the exact PortAudio device list first before
+  changing the define below.
+
+  Run this app:
+    ./Portable/build/portable_sound_device_query
+
+  Stop JACK and restore the normal desktop audio stack:
+    killall jackd
+    systemctl --user start wireplumber pipewire pipewire-pulse
+
+  If you want PipeWire's JACK-compatibility layer instead of a real jackd
+  server, do not stop PipeWire; use pw-jack for that separate experiment.
 */
 
 #include <algorithm>
@@ -36,20 +67,7 @@ APIs disabled, so non-MOCK mode uses ALSA through vendored PortAudio.
 
 #define MOCK FALSE
 
-#define DEVICE_NAME "default"
-#define CHANNELS 2
-
-#ifndef FRAMES_PER_BUFFER
-#define FRAMES_PER_BUFFER 256
-#endif
-
-#ifndef SAMPLE_FORMAT
-#define SAMPLE_FORMAT paFloat32
-#endif
-
-#ifndef SAMPLE_RATE
-#define SAMPLE_RATE 48000
-#endif
+#include "portable/sound_device_query_config.h"
 
 #ifndef PLAY_AND_LISTEN_SECONDS
 #define PLAY_AND_LISTEN_SECONDS 5.0
@@ -68,7 +86,7 @@ APIs disabled, so non-MOCK mode uses ALSA through vendored PortAudio.
 #endif
 
 #ifndef PORTABLE_OUTPUT_DIR
-#define PORTABLE_OUTPUT_DIR "output"
+#define PORTABLE_OUTPUT_DIR "sysdefault"
 #endif
 
 #ifndef PORTABLE_PLOT_SCRIPT
@@ -80,6 +98,9 @@ APIs disabled, so non-MOCK mode uses ALSA through vendored PortAudio.
 #include "portable/mock_devices.h"
 #else
 #include <portaudio.h>
+#if defined(PA_USE_ASIO)
+#include <pa_asio.h>
+#endif
 #endif
 
 #include "portable/audio_helpers.h"
@@ -440,6 +461,26 @@ bool save_capture_csv(
     return save_arrays_to_csv(csv_path, headers, columns);
 }
 
+#if !MOCK && defined(PA_USE_ASIO)
+PaError maybe_set_asio_sample_rate(
+    PaStream *stream,
+    const PaDeviceInfo *device_info)
+{
+    if (!stream || !device_info)
+    {
+        return paBadStreamPtr;
+    }
+
+    const PaHostApiInfo *host_api_info = Pa_GetHostApiInfo(device_info->hostApi);
+    if (!host_api_info || host_api_info->type != paASIO)
+    {
+        return paNoError;
+    }
+
+    return PaAsio_SetStreamSampleRate(stream, SAMPLE_RATE);
+}
+#endif
+
 } // namespace
 
 int main()
@@ -597,6 +638,22 @@ int main()
         Pa_Terminate();
         return 1;
     }
+
+#if !MOCK && defined(PA_USE_ASIO)
+    const PaError asio_rate_error =
+        maybe_set_asio_sample_rate(stream, device_info);
+    if (asio_rate_error != paNoError)
+    {
+        show_failure_context(
+            device_index,
+            device_info,
+            "PaAsio_SetStreamSampleRate failed",
+            asio_rate_error);
+        Pa_CloseStream(stream);
+        Pa_Terminate();
+        return 1;
+    }
+#endif
 
     const double seconds_per_output_channel =
         output_channels > 0
