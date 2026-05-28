@@ -1,23 +1,9 @@
 # Portable DSP from a fresh Ubuntu install
 
-## Short answer
-
-Yes, one solution can cover both Ubuntu Desktop and Ubuntu Server.
-
-The clean split is:
-
-- let Ubuntu own the NVIDIA kernel driver
-- let Nix own the user-space build environment
-- let this repo's `CMakeLists.txt` decide whether you build CPU-only or CUDA targets
-
-That is not ugly. The only real differences between Desktop and Server are runtime concerns:
-
-- Desktop is nicer for the `matplotlib` viewers because they open windows
-- Server is fine for building and for CUDA compute, but real-audio apps need an accessible ALSA device
 
 ## What this repo currently expects
 
-From the current `Portable/CMakeLists.txt` and app sources:
+and app sources:
 
 - Linux only
 - CMake + Ninja
@@ -26,47 +12,35 @@ From the current `Portable/CMakeLists.txt` and app sources:
 - optional CUDA toolkit for CUDA targets
 - optional Python + `numpy` + `matplotlib` for viewers
 
-Important default behavior:
-
-- these apps currently default to real audio (`MOCK=FALSE`):
-  - `portable_sound_device_query`
-  - `portable_multi_conv_benchmarking`
-  - `portable_infer_topology_and_save_it`
-  - `portable_detect_timming`
-- these are mock-friendly by default:
-  - `portable_infer_topology_from_infered_topology_and_save_it`
-  - `portable_simple_cuda_portaudio`
-  - `portable_simple_cuda_naive_convolution`
-  - `portable_simple_cuda_less_naive_convolution`
-- `portable_cuda_device_query` does not need audio hardware
-
-## Recommended approach
 
 ### 1. Pre-install: download Ubuntu and write the USB stick
 
-Pick the Ubuntu image you want:
+For a normal laptop or workstation, use Ubuntu Desktop:
 
-- Ubuntu Desktop if you want the easiest plotting and audio-device inspection experience
-- Ubuntu Server if this box is mainly for CUDA and command-line work
+- ISO download: https://ubuntu.com/download/desktop
+- official install tutorial: https://documentation.ubuntu.com/desktop/en/24.04/tutorial/install-ubuntu-desktop/
 
-On another machine:
+For a headless machine or mostly-CLI CUDA box, use Ubuntu Server:
 
-1. Download the Ubuntu `.iso` for the target architecture from Ubuntu.
-2. Install Balena Etcher.
-3. Insert a USB stick large enough for the image.
-4. In Balena Etcher, choose the Ubuntu `.iso`, choose the USB stick, then click Flash.
-5. Safely eject the USB stick, boot the target machine from it, and start the installer.
+- ISO download: https://ubuntu.com/download/server
+- official install tutorial: https://ubuntu.com/tutorials/tutorial-install-ubuntu-server
 
-If this machine is headless, Ubuntu Server is viable.
+To write the installer USB:
+
+- Balena Etcher download: https://etcher.balena.io/
+- Balena Etcher docs: https://etcher-docs.balena.io/
+
+Concrete flow:
+
+1. On another machine, download the Ubuntu Desktop or Ubuntu Server ISO from the link above.
+2. Download and open Balena Etcher.
+3. Insert an 8 GB or larger USB stick.
+4. In Etcher, click `Flash from file`, pick the Ubuntu ISO, pick the USB stick, then click `Flash`.
+5. Safely eject the USB stick, boot the target machine from it, and follow the matching official Ubuntu install tutorial above.
 
 ### 2. Install Ubuntu
 
-During the installer:
-
-- use the normal Ubuntu install flow
-- let Ubuntu use the whole target disk unless you already have a partitioning plan
-- enable network access during install if possible
-- reboot into the fresh system when the installer finishes
+Follow the official Ubuntu installer tutorial you chose in step 1.
 
 ## 3. Clone this repo
 
@@ -184,48 +158,8 @@ Examples:
 ./Portable/build/portable_simple_cuda_less_naive_convolution
 ```
 
-## 10. Headless-server caveats
 
-This is the part that matters most for "one solution for both".
-
-### What works well on both Desktop and Server
-
-- installing the Ubuntu NVIDIA driver
-- installing Nix
-- `nix --extra-experimental-features 'nix-command flakes' develop`
-- building CPU targets
-- building CUDA targets
-- running `portable_cuda_device_query`
-- running mock-mode apps
-
-### What is less clean on a pure headless server
-
-- Python viewer scripts call `matplotlib.pyplot.show()`
-- real-audio apps need a usable ALSA device
-- device names like `"default"` only help if the server actually exposes a sound device to the process
-
-So the single-solution story is:
-
-- yes for build environment
-- yes for CUDA
-- yes for mock audio
-- maybe for real audio, depending on whether the server has a real ALSA device
-- awkward for interactive plotting unless you use X forwarding or open the generated CSVs elsewhere
-
-The generated files land under `Portable/output`.
-
-## 11. If you want to switch an app between mock and real audio
-
-Each app keeps its main knobs near the top of the source file in `Portable/apps`.
-
-Typical knobs are:
-
-- `#define MOCK TRUE` or `FALSE`
-- `#define DEVICE_NAME ...`
-- sample rate / buffer size / channel count constants
-
-Examples:
-
+## RUN ON OF THESE : (THE COMMANDS ARE IN THE HEADER)
 - [Portable/apps/sound_device_query.cpp](/home/ian/DSP/Portable/apps/sound_device_query.cpp:1)
 - [Portable/apps/multi_conv_benchmarking.cpp](/home/ian/DSP/Portable/apps/multi_conv_benchmarking.cpp:1)
 - [Portable/apps/simple_cuda_naive_convolution.cu](/home/ian/DSP/Portable/apps/simple_cuda_naive_convolution.cu:1)
