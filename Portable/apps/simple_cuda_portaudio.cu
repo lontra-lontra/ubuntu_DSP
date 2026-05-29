@@ -4,6 +4,10 @@ Build from repo root:
   cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_portaudio -DPORTABLE_USE_MOCK=ON
   cmake --build Portable/build --target portable_simple_cuda_portaudio --parallel
 
+If `Portable/build` does not exist yet, came from another machine, or you changed
+`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
+the `cmake --build ...` line.
+
 Run:
   ./Portable/build/portable_simple_cuda_portaudio
 

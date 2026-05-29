@@ -145,6 +145,21 @@ Then configure again on the current machine.
 
 The simplest rule is: open the source file for the app you want under `Portable/apps` and copy the build and run commands written at the top of that file.
 
+Important:
+
+- `cmake -S Portable -B Portable/build ...` is the configure step
+- `cmake --build Portable/build ...` is only the build step
+- if `Portable/build` does not exist yet, if it came from another machine, or if you changed `PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` command before the `cmake --build ...` command
+- the first command creates or refreshes `Portable/build/CMakeCache.txt`
+
+Exact recovery commands:
+
+```bash
+rm -rf Portable/build
+cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_test -DPORTABLE_USE_MOCK=OFF
+cmake --build Portable/build --target portable_sound_device_test --parallel
+```
+
 Examples:
 
 - [Portable/apps/sound_device_query.cpp](/home/ian/ubuntu_DSP/Portable/apps/sound_device_query.cpp:1)
@@ -221,6 +236,8 @@ If needed, export the directory containing that library into `LD_LIBRARY_PATH` b
 Run:
 
 ```bash
+cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_query -DPORTABLE_USE_MOCK=OFF
+cmake --build Portable/build --target portable_sound_device_query --parallel
 ./Portable/build/portable_sound_device_query
 ```
 

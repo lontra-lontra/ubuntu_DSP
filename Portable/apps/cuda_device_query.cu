@@ -39,6 +39,10 @@ Configure and build this repo's CUDA deviceQuery app with CMake + Ninja:
   cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=cuda_device_query -DPORTABLE_USE_MOCK=ON
   cmake --build Portable/build --target portable_cuda_device_query --parallel
 
+If `Portable/build` does not exist yet, came from another machine, or you changed
+`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
+the `cmake --build ...` line.
+
 Run:
   ./Portable/build/portable_cuda_device_query
 

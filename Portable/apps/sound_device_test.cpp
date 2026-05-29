@@ -4,6 +4,10 @@ Build from repo root:
   cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_test -DPORTABLE_USE_MOCK=OFF
   cmake --build Portable/build --target portable_sound_device_test --parallel
 
+If `Portable/build` does not exist yet, came from another machine, or you changed
+`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
+the `cmake --build ...` line.
+
 Run:
   ./Portable/build/portable_sound_device_test
 
