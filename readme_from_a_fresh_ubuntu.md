@@ -231,6 +231,29 @@ ldconfig -p | grep libcuda.so.1
 
 If needed, export the directory containing that library into `LD_LIBRARY_PATH` before running the CUDA app.
 
+### `CUDA driver is a stub library`
+
+That means the program found the CUDA toolkit's placeholder `libcuda.so.1` instead of the real NVIDIA driver library from the host system.
+
+Check both locations:
+
+```bash
+ldconfig -p | grep libcuda.so.1
+find "$CUDAToolkit_ROOT" -path '*/lib/stubs/libcuda.so*' 2>/dev/null
+```
+
+Then force the real host driver directory to the front of `LD_LIBRARY_PATH`:
+
+```bash
+REAL_LIBCUDA_PATH="$(ldconfig -p | awk '/libcuda\.so\.1/ { print $NF; exit }')"
+REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
+export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+If `LD_LIBRARY_PATH` already contains a CUDA `stubs` directory, start a fresh shell or remove that entry before running the app again.
+
+If `ldconfig -p | grep libcuda.so.1` finds nothing, the NVIDIA host driver is still not installed correctly even if the CUDA toolkit is present.
+
 ### Real-audio app opens but cannot use the device
 
 Run:
@@ -247,4 +270,13 @@ and confirm that the ALSA device you expect is visible through PortAudio.
 
 ```bash
 git pull
+```
+
+## 13. Optional: rerun the Nix shell
+
+If you pulled changes to `flake.nix`, changed machines, or your shell environment looks stale, exit the current shell and enter it again:
+
+```bash
+exit
+nix --extra-experimental-features 'nix-command flakes' develop
 ```

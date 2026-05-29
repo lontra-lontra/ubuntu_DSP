@@ -40,9 +40,25 @@
           export CUDAToolkit_ROOT="${cudaToolkit}"
           export CUDACXX="${cudaToolkit}/bin/nvcc"
 
+          REAL_LIBCUDA_PATH="$(ldconfig -p 2>/dev/null | awk '/libcuda\.so\.1/ { print $NF; exit }')"
+          if [ -n "$REAL_LIBCUDA_PATH" ]; then
+            REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
+            CLEANED_LD_LIBRARY_PATH="$(printf '%s' "${LD_LIBRARY_PATH-}" | tr ':' '\n' | grep -v '/stubs$' | awk 'NF' | paste -sd: -)"
+            if [ -n "$CLEANED_LD_LIBRARY_PATH" ]; then
+              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR:$CLEANED_LD_LIBRARY_PATH"
+            else
+              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR"
+            fi
+          fi
+
           echo "Entered the DSP dev shell."
-          echo "CPU configure:  cmake -S Portable -B Portable/build -G Ninja"
-          echo "CUDA configure: cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_ENABLE_CUDA_APPS=ON"
+          echo "CPU configure:  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_test -DPORTABLE_USE_MOCK=OFF"
+          echo "CUDA configure: cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=cuda_device_query -DPORTABLE_USE_MOCK=ON"
+          if [ -n "$REAL_LIBCUDA_PATH" ]; then
+            echo "Using host libcuda from: $REAL_LIBCUDA_PATH"
+          else
+            echo "Warning: could not find host libcuda.so.1 with ldconfig."
+          fi
         '';
       };
     };
