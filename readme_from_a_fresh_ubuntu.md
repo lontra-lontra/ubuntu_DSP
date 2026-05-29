@@ -250,6 +250,12 @@ REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
 export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
+If you want a blunt one-shot run command for a CUDA app, this is fine too:
+
+```bash
+LD_LIBRARY_PATH="/lib/x86_64-linux-gnu:$CUDAToolkit_ROOT/lib:$(pkg-config --variable=libdir fftw3f)" ./Portable/build/portable_cuda_device_query
+```
+
 If `LD_LIBRARY_PATH` already contains a CUDA `stubs` directory, start a fresh shell or remove that entry before running the app again.
 
 If `ldconfig -p | grep libcuda.so.1` finds only `/stubs/` paths or finds nothing, the NVIDIA host driver is still not installed correctly even if the CUDA toolkit is present.

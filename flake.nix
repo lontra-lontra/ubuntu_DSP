@@ -40,15 +40,20 @@
           export CUDAToolkit_ROOT="${cudaToolkit}"
           export CUDACXX="${cudaToolkit}/bin/nvcc"
 
+          BASE_LD_LIBRARY_PATH="${cudaToolkit}/lib:${pkgs.fftwFloat}/lib"
           REAL_LIBCUDA_PATH="$(ldconfig -p 2>/dev/null | awk '/libcuda\.so\.1/ && $NF !~ /\/stubs(\/|$)/ { print $NF; exit }')"
+          CLEANED_LD_LIBRARY_PATH="$(printf '%s' "$LD_LIBRARY_PATH" | tr ':' '\n' | awk '$0 !~ /\/stubs(\/|$)/ && NF' | paste -sd: -)"
           if [ -n "$REAL_LIBCUDA_PATH" ]; then
             REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
-            CLEANED_LD_LIBRARY_PATH="$(printf '%s' "$LD_LIBRARY_PATH" | tr ':' '\n' | awk '$0 !~ /\/stubs(\/|$)/ && NF' | paste -sd: -)"
             if [ -n "$CLEANED_LD_LIBRARY_PATH" ]; then
-              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR:$CLEANED_LD_LIBRARY_PATH"
+              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR:$BASE_LD_LIBRARY_PATH:$CLEANED_LD_LIBRARY_PATH"
             else
-              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR"
+              export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR:$BASE_LD_LIBRARY_PATH"
             fi
+          elif [ -n "$CLEANED_LD_LIBRARY_PATH" ]; then
+            export LD_LIBRARY_PATH="$BASE_LD_LIBRARY_PATH:$CLEANED_LD_LIBRARY_PATH"
+          else
+            export LD_LIBRARY_PATH="$BASE_LD_LIBRARY_PATH"
           fi
 
           echo "Entered the DSP dev shell."
@@ -59,6 +64,7 @@
           else
             echo "Warning: could not find a non-stub host libcuda.so.1 with ldconfig."
           fi
+          echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
         '';
       };
     };
