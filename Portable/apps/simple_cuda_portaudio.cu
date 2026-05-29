@@ -1,11 +1,13 @@
 /*
 Build from repo root:
 
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_ENABLE_CUDA_APPS=ON
-  cmake --build Portable/build --target portable_simple_cuda_portaudio
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_portaudio -DPORTABLE_USE_MOCK=ON
+  cmake --build Portable/build --target portable_simple_cuda_portaudio --parallel
 
 Run:
   ./Portable/build/portable_simple_cuda_portaudio
+
+To try real PortAudio instead, rerun the first command with `-DPORTABLE_USE_MOCK=OFF`.
 
 This is intentionally a very small mock PortAudio + CUDA example.
 The mock device generates two sine-wave input channels.
@@ -32,7 +34,9 @@ That is deliberately simple, not efficient.
 #define FALSE 0
 #endif
 
-#define MOCK TRUE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #define CHANNELS 2
 

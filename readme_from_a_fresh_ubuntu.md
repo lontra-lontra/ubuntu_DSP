@@ -1,59 +1,62 @@
 # Portable DSP from a fresh Ubuntu install
 
+## What this repo expects
 
-## What this repo currently expects
-
-and app sources:
-
-- Linux only
+- Linux
 - CMake + Ninja
 - FFTW single precision (`fftw3f`)
-- ALSA headers/libs for apps that default to `MOCK=FALSE`
+- ALSA headers and libraries for apps that default to `MOCK=FALSE`
 - optional CUDA toolkit for CUDA targets
-- optional Python + `numpy` + `matplotlib` for viewers
+- optional Python with `numpy` and `matplotlib` for viewer scripts
 
+## 1. Pre-install: download Ubuntu and write the USB stick
 
-### 1. Pre-install: download Ubuntu and write the USB stick
+For a normal laptop or workstation:
 
-For a normal laptop or workstation, use Ubuntu Desktop:
+- Ubuntu Desktop ISO: https://ubuntu.com/download/desktop
+- Ubuntu Desktop install tutorial: https://documentation.ubuntu.com/desktop/en/24.04/tutorial/install-ubuntu-desktop/
 
-- ISO download: https://ubuntu.com/download/desktop
-- official install tutorial: https://documentation.ubuntu.com/desktop/en/24.04/tutorial/install-ubuntu-desktop/
+For a headless machine or mostly-CLI CUDA box:
 
-For a headless machine or mostly-CLI CUDA box, use Ubuntu Server:
+- Ubuntu Server ISO: https://ubuntu.com/download/server
+- Ubuntu Server install tutorial: https://ubuntu.com/tutorials/tutorial-install-ubuntu-server
 
-- ISO download: https://ubuntu.com/download/server
-- official install tutorial: https://ubuntu.com/tutorials/tutorial-install-ubuntu-server
-
-To write the installer USB:
+To write the USB installer:
 
 - Balena Etcher download: https://etcher.balena.io/
 - Balena Etcher docs: https://etcher-docs.balena.io/
 
 Concrete flow:
 
-1. On another machine, download the Ubuntu Desktop or Ubuntu Server ISO from the link above.
+1. On another machine, download the Ubuntu Desktop or Ubuntu Server ISO from the links above.
 2. Download and open Balena Etcher.
 3. Insert an 8 GB or larger USB stick.
 4. In Etcher, click `Flash from file`, pick the Ubuntu ISO, pick the USB stick, then click `Flash`.
-5. Safely eject the USB stick, boot the target machine from it, and follow the matching official Ubuntu install tutorial above.
+5. Safely eject the USB stick, boot the target machine from it, and follow the matching official Ubuntu install tutorial.
 
-### 2. Install Ubuntu
+## 2. Install Ubuntu
 
 Follow the official Ubuntu installer tutorial you chose in step 1.
 
-## 3. Clone this repo
+## 3. Install base packages and clone this repo
 
 ```bash
+cd ~
+sudo apt update
+sudo apt install -y git curl
 git clone https://github.com/lontra-lontra/ubuntu_DSP.git
 cd ubuntu_DSP
+```
+
+If you copied this repo from another machine instead of cloning it, remove any old CMake build directory now:
+
+```bash
+rm -rf Portable/build
 ```
 
 ## 4. Install the NVIDIA driver with Ubuntu, not with Nix
 
 Do this before touching the CUDA apps.
-
-Update the machine first:
 
 ```bash
 sudo apt update
@@ -63,14 +66,14 @@ sudo reboot
 
 After reboot:
 
-- on Ubuntu Desktop:
+On Ubuntu Desktop:
 
 ```bash
 sudo ubuntu-drivers install
 sudo reboot
 ```
 
-- on Ubuntu Server / headless compute box:
+On Ubuntu Server or a headless compute box:
 
 ```bash
 sudo ubuntu-drivers install --gpgpu
@@ -111,62 +114,75 @@ The `flake.nix` in this repo gives you:
 - ALSA development files
 - a CUDA toolkit path suitable for `find_package(CUDAToolkit)`
 
-Note:
+## 7. Validate the installations
 
-- the flake intentionally keeps the NVIDIA driver outside Nix
-- the flake uses `cudaPackages.cudatoolkit` because this repo's CMake expects a conventional toolkit layout
-
-## 7. Configure and build
-
-### CPU-only
+Run these after entering the Nix shell:
 
 ```bash
-cmake -S Portable -B Portable/build -G Ninja
-cmake --build Portable/build
+cmake --version
+ninja --version
+pkg-config --modversion fftw3f
+python3 -c "import numpy, matplotlib; print(numpy.__version__)"
+echo "$CUDAToolkit_ROOT"
+echo "$CUDACXX"
+nvcc --version
+nvidia-smi
 ```
 
-### CPU + CUDA
+If those commands work, your shell, CUDA toolkit path, Python packages, FFTW, and driver stack are in the expected state.
+
+## 8. Build one app at a time
+
+Important: CMake build directories are host-specific. There is no elegant way to reuse the same `Portable/build` directory across different machines or different repo paths. The normal fix is to delete that build directory and configure again on the current machine.
+
+If you see an error like `CMakeCache.txt directory ... is different than the directory ... where CMake was created`, run:
 
 ```bash
-cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_ENABLE_CUDA_APPS=ON
-cmake --build Portable/build
+rm -rf Portable/build
 ```
 
-## 8. Build only the app you care about
+Then configure again on the current machine.
+
+The simplest rule is: open the source file for the app you want under `Portable/apps` and copy the build and run commands written at the top of that file.
 
 Examples:
 
-```bash
-cmake --build Portable/build --target portable_sound_device_query
-cmake --build Portable/build --target portable_multi_conv_benchmarking
-cmake --build Portable/build --target portable_cuda_device_query
-cmake --build Portable/build --target portable_simple_cuda_less_naive_convolution
-```
+- [Portable/apps/sound_device_query.cpp](/home/ian/ubuntu_DSP/Portable/apps/sound_device_query.cpp:1)
+- [Portable/apps/sound_device_test.cpp](/home/ian/ubuntu_DSP/Portable/apps/sound_device_test.cpp:1)
+- [Portable/apps/multi_conv_benchmarking.cpp](/home/ian/ubuntu_DSP/Portable/apps/multi_conv_benchmarking.cpp:1)
+- [Portable/apps/infer_topology_and_save_it.cpp](/home/ian/ubuntu_DSP/Portable/apps/infer_topology_and_save_it.cpp:1)
+- [Portable/apps/detect_timming.cpp](/home/ian/ubuntu_DSP/Portable/apps/detect_timming.cpp:1)
+- [Portable/apps/cuda_device_query.cu](/home/ian/ubuntu_DSP/Portable/apps/cuda_device_query.cu:1)
+- [Portable/apps/simple_cuda_portaudio.cu](/home/ian/ubuntu_DSP/Portable/apps/simple_cuda_portaudio.cu:1)
+- [Portable/apps/simple_cuda_naive_convolution.cu](/home/ian/ubuntu_DSP/Portable/apps/simple_cuda_naive_convolution.cu:1)
+- [Portable/apps/simple_cuda_less_naive_convolution.cu](/home/ian/ubuntu_DSP/Portable/apps/simple_cuda_less_naive_convolution.cu:1)
+
+That is still CMake, but only because this repo already uses CMake as its build system. The readme does not need to teach the whole build system if the per-app commands at the top of each file are enough.
 
 ## 9. Run apps
 
+Use the run command written at the top of the app source file you chose in step 8.
+
+## 10. Switching between mock and real audio
+
+Each app keeps its main knobs near the top of the source file in `Portable/apps`.
+
+Typical knobs are:
+
+- mock/real audio selection in the first `cmake` command at the top of each app file:
+  `-DPORTABLE_USE_MOCK=ON` or `-DPORTABLE_USE_MOCK=OFF`
+- `#define DEVICE_NAME ...`
+- sample rate, buffer size, and channel count constants
+
 Examples:
 
-```bash
-./Portable/build/portable_sound_device_query
-./Portable/build/portable_multi_conv_benchmarking
-./Portable/build/portable_infer_topology_and_save_it
-./Portable/build/portable_detect_timming
-./Portable/build/portable_cuda_device_query
-./Portable/build/portable_simple_cuda_portaudio
-./Portable/build/portable_simple_cuda_naive_convolution
-./Portable/build/portable_simple_cuda_less_naive_convolution
-```
+- [Portable/apps/sound_device_query.cpp](/home/ian/ubuntu_DSP/Portable/apps/sound_device_query.cpp:1)
+- [Portable/apps/sound_device_test.cpp](/home/ian/ubuntu_DSP/Portable/apps/sound_device_test.cpp:1)
+- [Portable/apps/multi_conv_benchmarking.cpp](/home/ian/ubuntu_DSP/Portable/apps/multi_conv_benchmarking.cpp:1)
 
+If you have no real audio hardware on the target machine, use the app command that already has `-DPORTABLE_USE_MOCK=ON`, or change only that flag and rerun the first `cmake` command before rebuilding.
 
-## RUN ON OF THESE : (THE COMMANDS ARE IN THE HEADER)
-- [Portable/apps/sound_device_query.cpp](/home/ian/DSP/Portable/apps/sound_device_query.cpp:1)
-- [Portable/apps/multi_conv_benchmarking.cpp](/home/ian/DSP/Portable/apps/multi_conv_benchmarking.cpp:1)
-- [Portable/apps/simple_cuda_naive_convolution.cu](/home/ian/DSP/Portable/apps/simple_cuda_naive_convolution.cu:1)
-
-If you have no real audio hardware on the target machine, prefer apps that already use `MOCK=TRUE`, or flip the app you want to test into mock mode and rebuild it.
-
-## 12. Troubleshooting
+## 11. Troubleshooting
 
 ### `nvidia-smi` fails
 
@@ -209,3 +225,9 @@ Run:
 ```
 
 and confirm that the ALSA device you expect is visible through PortAudio.
+
+## 12. Extra: update the repo later
+
+```bash
+git pull
+```

@@ -1,10 +1,12 @@
 /*
 Build from repo root:
-  cmake -S Portable -B Portable/build -G Ninja
-  cmake --build Portable/build --target portable_detect_timming
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=detect_timming -DPORTABLE_USE_MOCK=OFF
+  cmake --build Portable/build --target portable_detect_timming --parallel
 
 Run:
   ./Portable/build/portable_detect_timming
+
+To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 This app reopens the selected Linux audio device for each sample-rate /
 buffer-size pair, captures 3 bursts, and writes the inferred delays for
@@ -25,7 +27,9 @@ every configuration.
 #define FALSE 0
 #endif
 
-#define MOCK FALSE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #define CHANNELS 2
 

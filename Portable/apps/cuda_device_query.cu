@@ -36,9 +36,14 @@ Verify the toolchain:
   nvidia-smi
 
 Configure and build this repo's CUDA deviceQuery app with CMake + Ninja:
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_ENABLE_CUDA_APPS=ON
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=cuda_device_query -DPORTABLE_USE_MOCK=ON
   cmake --build Portable/build --target portable_cuda_device_query --parallel
+
+Run:
   ./Portable/build/portable_cuda_device_query
+
+`PORTABLE_USE_MOCK` is part of the repo-wide configure interface.
+This sample itself does not use audio.
 */
 
 /* This sample queries the properties of the CUDA devices present in the system

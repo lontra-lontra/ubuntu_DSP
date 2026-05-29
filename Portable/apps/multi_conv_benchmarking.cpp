@@ -1,19 +1,17 @@
 /*
 Build from repo root:
-  cd <repo-root>
-
-  cmake -S Portable -B Portable/build -G Ninja
-  cmake --build Portable/build --target portable_multi_conv_benchmarking
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=multi_conv_benchmarking -DPORTABLE_USE_MOCK=OFF
+  cmake --build Portable/build --target portable_multi_conv_benchmarking --parallel
 
 Run:
   ./Portable/build/portable_multi_conv_benchmarking
 
-Important config is in this file:
-  #define MOCK TRUE or FALSE
+Important config:
+  mock/real audio is selected by `-DPORTABLE_USE_MOCK=ON/OFF` in the first command.
   #define CHANNELS 2
   #define DEVICE_NAME ...
 
-The commands stay the same when you switch MOCK.
+To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 */
 
 #include <algorithm>
@@ -34,7 +32,9 @@ The commands stay the same when you switch MOCK.
 #define FALSE 0
 #endif
 
-#define MOCK FALSE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #define CHANNELS 2
 

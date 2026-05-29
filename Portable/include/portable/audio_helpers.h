@@ -9,7 +9,7 @@
 #endif
 
 #ifndef MOCK
-#define MOCK TRUE
+#error "MOCK must be defined by the build system before including portable/audio_helpers.h"
 #endif
 
 #if MOCK

@@ -1,15 +1,15 @@
 /*
 Build from repo root:
 
-  cmake -S Portable -B Portable/build -G Ninja
-  cmake --build Portable/build --target portable_sound_device_query
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_query -DPORTABLE_USE_MOCK=OFF
+  cmake --build Portable/build --target portable_sound_device_query --parallel
 
 Run:
-  Windows: Portable\build\portable_sound_device_query.exe
-  Linux:   ./Portable/build/portable_sound_device_query
+  ./Portable/build/portable_sound_device_query
+
+To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 Important config:
-  #define MOCK TRUE or FALSE
   shared device config in portable/sound_device_query_config.h:
   #define DEVICE_NAME ...
   #define CHANNELS ...
@@ -65,7 +65,9 @@ Linux JACK experiment notes:
 #define FALSE 0
 #endif
 
-#define MOCK FALSE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #include "portable/sound_device_query_config.h"
 

@@ -1,19 +1,17 @@
 /*
 Build from repo root:
-  cd <repo-root>
-
-  cmake -S Portable -B Portable/build -G Ninja
-  cmake --build Portable/build --target portable_infer_topology_from_infered_topology_and_save_it
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=infer_topology_from_infered_topology_and_save_it -DPORTABLE_USE_MOCK=ON
+  cmake --build Portable/build --target portable_infer_topology_from_infered_topology_and_save_it --parallel
 
 Run:
   ./Portable/build/portable_infer_topology_from_infered_topology_and_save_it
 
-Important config is in this file:
-  #define MOCK TRUE or FALSE
+Important config:
+  mock/real audio is selected by `-DPORTABLE_USE_MOCK=ON/OFF` in the first command.
   #define CHANNELS 2
   #define DEVICE_NAME ...
 
-The commands stay the same when you switch MOCK.
+To switch to real audio, rerun the first command with `-DPORTABLE_USE_MOCK=OFF`.
 */
 
 #include <algorithm>
@@ -32,7 +30,9 @@ The commands stay the same when you switch MOCK.
 #define FALSE 0
 #endif
 
-#define MOCK TRUE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #define CHANNELS 2
 

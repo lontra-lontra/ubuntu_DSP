@@ -1,15 +1,15 @@
 /*
 Build from repo root:
 
-  cmake -S Portable -B Portable/build -G Ninja
-  cmake --build Portable/build --target portable_sound_device_test
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_test -DPORTABLE_USE_MOCK=OFF
+  cmake --build Portable/build --target portable_sound_device_test --parallel
 
 Run:
-  Windows: Portable\build\portable_sound_device_test.exe
-  Linux:   ./Portable/build/portable_sound_device_test
+  ./Portable/build/portable_sound_device_test
+
+To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 Important config:
-  #define MOCK TRUE or FALSE             // in this file
   shared device config in portable/sound_device_query_config.h:
   #define DEVICE_NAME ...
   #define CHANNELS ...
@@ -17,12 +17,14 @@ Important config:
   #define FRAMES_PER_BUFFER ...
   #define SAMPLE_FORMAT ...
 
-This app plays a 1000 Hz tone for 0.2 seconds on one output channel at a time,
-with 0.2 seconds of silence between channels.
+This app plays a 1000 Hz tone for 1 second on one output channel at a time,
+with 1 second of silence between channels, and repeats until you stop it.
 */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <csignal>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -35,16 +37,18 @@ with 0.2 seconds of silence between channels.
 #define FALSE 0
 #endif
 
-#define MOCK FALSE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #include "portable/sound_device_query_config.h"
 
 #ifndef TONE_SECONDS
-#define TONE_SECONDS 0.2
+#define TONE_SECONDS 1.0
 #endif
 
 #ifndef PAUSE_SECONDS
-#define PAUSE_SECONDS 0.2
+#define PAUSE_SECONDS 1.0
 #endif
 
 #ifndef TONE_FREQUENCY_HZ
@@ -68,6 +72,12 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
+std::atomic<bool> g_keep_running{true};
+
+void handle_interrupt_signal(int)
+{
+    g_keep_running.store(false);
+}
 
 void print_requested_config()
 {
@@ -350,55 +360,60 @@ int main()
         static_cast<size_t>(pause_frames * output_channels),
         0.0f);
 
+    std::signal(SIGINT, handle_interrupt_signal);
     std::cout << "Playing a " << TONE_FREQUENCY_HZ
               << " Hz tone for " << TONE_SECONDS
               << " seconds on each output channel with "
-              << PAUSE_SECONDS << " seconds between channels...\n";
+              << PAUSE_SECONDS
+              << " seconds between channels. Press Ctrl+C to stop.\n";
 
-    for (int active_output_channel = 0;
-         active_output_channel < output_channels;
-         ++active_output_channel)
+    while (g_keep_running.load())
     {
-        std::cout << "Playing output channel "
-                  << active_output_channel << " of "
-                  << output_channels - 1 << '\n';
-
-        fill_tone_buffer(
-            tone_buffer,
-            output_channels,
-            active_output_channel,
-            tone_frames);
-
-        const PaError write_tone_error =
-            Pa_WriteStream(stream, tone_buffer.data(), tone_frames);
-        if (write_tone_error != paNoError)
+        for (int active_output_channel = 0;
+             active_output_channel < output_channels && g_keep_running.load();
+             ++active_output_channel)
         {
-            show_failure_context(
-                device_index,
-                device_info,
-                "Pa_WriteStream failed while playing the tone",
-                write_tone_error);
-            Pa_AbortStream(stream);
-            Pa_CloseStream(stream);
-            Pa_Terminate();
-            return 1;
-        }
+            std::cout << "Playing output channel "
+                      << active_output_channel << " of "
+                      << output_channels - 1 << '\n';
 
-        if (active_output_channel + 1 < output_channels && pause_frames > 0)
-        {
-            const PaError write_pause_error =
-                Pa_WriteStream(stream, silence_buffer.data(), pause_frames);
-            if (write_pause_error != paNoError)
+            fill_tone_buffer(
+                tone_buffer,
+                output_channels,
+                active_output_channel,
+                tone_frames);
+
+            const PaError write_tone_error =
+                Pa_WriteStream(stream, tone_buffer.data(), tone_frames);
+            if (write_tone_error != paNoError)
             {
                 show_failure_context(
                     device_index,
                     device_info,
-                    "Pa_WriteStream failed while playing the pause",
-                    write_pause_error);
+                    "Pa_WriteStream failed while playing the tone",
+                    write_tone_error);
                 Pa_AbortStream(stream);
                 Pa_CloseStream(stream);
                 Pa_Terminate();
                 return 1;
+            }
+
+            if (pause_frames > 0)
+            {
+                const PaError write_pause_error =
+                    Pa_WriteStream(stream, silence_buffer.data(), pause_frames);
+                if (write_pause_error != paNoError)
+                {
+                    show_failure_context(
+                        device_index,
+                        device_info,
+                        "Pa_WriteStream failed while playing the pause",
+                        write_pause_error);
+                    Pa_AbortStream(stream);
+                    Pa_CloseStream(stream);
+                    Pa_Terminate();
+                    return 1;
+                }
             }
         }
     }
@@ -419,6 +434,6 @@ int main()
     Pa_CloseStream(stream);
     Pa_Terminate();
 
-    std::cout << "Finished output sweep.\n";
+    std::cout << "Stopped output sweep.\n";
     return 0;
 }

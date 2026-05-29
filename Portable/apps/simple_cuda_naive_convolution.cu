@@ -1,11 +1,13 @@
 /*
 Build from repo root:
 
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_ENABLE_CUDA_APPS=ON
-  cmake --build Portable/build --target portable_simple_cuda_naive_convolution
+  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_naive_convolution -DPORTABLE_USE_MOCK=ON
+  cmake --build Portable/build --target portable_simple_cuda_naive_convolution --parallel
 
 Run:
   ./Portable/build/portable_simple_cuda_naive_convolution
+
+To try real PortAudio instead, rerun the first command with `-DPORTABLE_USE_MOCK=OFF`.
 
 This is a deliberately naive CUDA FIR example.
 Each output/input channel pair owns one KERNEL_SIZE-tap kernel uploaded once to the GPU.
@@ -35,7 +37,9 @@ Each thread sums contributions from every input channel.
 #define FALSE 0
 #endif
 
-#define MOCK TRUE
+#ifndef MOCK
+#error "MOCK must be defined by the build system for this target."
+#endif
 
 #define INPUT_CHANNELS 5
 #define OUTPUT_CHANNELS 5
