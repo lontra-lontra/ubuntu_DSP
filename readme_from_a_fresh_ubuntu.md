@@ -250,11 +250,16 @@ REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
 export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-If you want a blunt one-shot run command for a CUDA app, this is fine too:
+For Nix-built binaries, a safer one-shot test is to expose only `libcuda.so.1` through a tiny shim directory instead of prepending the whole system library directory:
 
 ```bash
-LD_LIBRARY_PATH="/lib/x86_64-linux-gnu:$CUDAToolkit_ROOT/lib:$(pkg-config --variable=libdir fftw3f)" ./Portable/build/portable_cuda_device_query
+mkdir -p /tmp/portable-real-libcuda-"$USER"
+ln -sfn /lib/x86_64-linux-gnu/libcuda.so.1 /tmp/portable-real-libcuda-"$USER"/libcuda.so.1
+ln -sfn /lib/x86_64-linux-gnu/libcuda.so.1 /tmp/portable-real-libcuda-"$USER"/libcuda.so
+LD_LIBRARY_PATH="/tmp/portable-real-libcuda-$USER:$CUDAToolkit_ROOT/lib:$(pkg-config --variable=libdir fftw3f)" ./Portable/build/portable_cuda_device_query
 ```
+
+Prepending `/lib/x86_64-linux-gnu` directly can pull in the host glibc and produce loader errors on a Nix-built binary, so prefer the shim-directory version above.
 
 If `LD_LIBRARY_PATH` already contains a CUDA `stubs` directory, start a fresh shell or remove that entry before running the app again.
 
