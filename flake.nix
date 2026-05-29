@@ -43,7 +43,7 @@
           REAL_LIBCUDA_PATH="$(ldconfig -p 2>/dev/null | awk '/libcuda\.so\.1/ { print $NF; exit }')"
           if [ -n "$REAL_LIBCUDA_PATH" ]; then
             REAL_LIBCUDA_DIR="$(dirname "$REAL_LIBCUDA_PATH")"
-            CLEANED_LD_LIBRARY_PATH="$(printf '%s' "${LD_LIBRARY_PATH-}" | tr ':' '\n' | grep -v '/stubs$' | awk 'NF' | paste -sd: -)"
+            CLEANED_LD_LIBRARY_PATH="$(printf '%s' "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '/stubs$' | awk 'NF' | paste -sd: -)"
             if [ -n "$CLEANED_LD_LIBRARY_PATH" ]; then
               export LD_LIBRARY_PATH="$REAL_LIBCUDA_DIR:$CLEANED_LD_LIBRARY_PATH"
             else
