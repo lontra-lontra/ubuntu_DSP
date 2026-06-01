@@ -117,7 +117,13 @@ def main() -> int:
         return 1
 
     try:
-        plot_numeric_csv(sys.argv[1], show=True)
+        resolved_path = Path(sys.argv[1]).expanduser()
+        figure, _ = plot_numeric_csv(resolved_path, show=False)
+        output_path = resolved_path.with_suffix(".png")
+        figure.savefig(output_path, dpi=160)
+        print(f"Saved plot: {output_path}")
+        plt.show()
+        plt.close(figure)
     except (FileNotFoundError, ValueError) as ex:
         print(ex)
         return 1

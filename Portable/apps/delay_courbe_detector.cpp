@@ -352,21 +352,35 @@ std::filesystem::path delay_courbe_plot_script_path()
 bool plot_delay_courbe_csv(const std::string &csv_path)
 {
     const std::filesystem::path script_path = delay_courbe_plot_script_path();
+    const std::vector<std::string> script_args = {csv_path};
 
-    int rc = run_plot_command("python3", script_path.string(), csv_path);
-    if (rc == 0)
+    if (run_plot_command("python3", script_path.string(), script_args, false) == 0)
     {
+        std::cout << "Interactive plot command: "
+                  << build_plot_command(
+                         "python3",
+                         script_path.string(),
+                         script_args)
+                  << '\n';
         return true;
     }
 
-    rc = run_plot_command("python", script_path.string(), csv_path);
-    if (rc == 0)
+    if (run_plot_command("python", script_path.string(), script_args, false) == 0)
     {
+        std::cout << "Interactive plot command: "
+                  << build_plot_command(
+                         "python",
+                         script_path.string(),
+                         script_args)
+                  << '\n';
         return true;
     }
 
     std::cerr
         << "Could not generate delay_courbe_detector plot automatically. "
+        << "Try plotting interactively with: "
+        << build_plot_command("python3", script_path.string(), script_args)
+        << '\n'
         << "The CSV is still available at: " << csv_path << '\n';
     return false;
 }

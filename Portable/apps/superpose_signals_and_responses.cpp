@@ -13,7 +13,6 @@ Run:
 
 Optional:
   ./Portable/build/portable_superpose_signals_and_responses --max-repetitions 10
-  ./Portable/build/portable_superpose_signals_and_responses --max-repetitions 10 --no-plots
 
 This app reuses the shared sound-device config for device name, channel count,
 and sample format, but it forces:
@@ -28,9 +27,11 @@ Behavior:
   - records input channel 19 only during that 0.1 s window
   - internally primes the stream with a short silence before each interaction
   - waits 0.3 s between interactions
-  - saves CSV data every interaction
-  - refreshes the plots every 10 interactions
+  - saves CSV data every 100 interactions and once more on exit
+  - never auto-plots; it prints the 3 manual plot commands after each save
   - adds the normalized response to a consolidated overlay plot
+  - detects the first response sample where abs(input) >= max(abs(input)) / 2
+  - consolidates a running delay distribution plot, like delay_courbe_detector
 */
 
 #include <algorithm>
@@ -40,6 +41,7 @@ Behavior:
 #include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -83,23 +85,31 @@ Behavior:
 #endif
 
 #ifndef BURST_TONE_SECONDS
-#define BURST_TONE_SECONDS 0.005
+#define BURST_TONE_SECONDS 0.01
 #endif
 
 #ifndef BURST_SILENCE_SECONDS
-#define BURST_SILENCE_SECONDS 0.005
+#define BURST_SILENCE_SECONDS 0.01
 #endif
 
 #ifndef OUTPUT_CHANNEL_INDEX
-#define OUTPUT_CHANNEL_INDEX 4
+#define OUTPUT_CHANNEL_INDEX 1
 #endif
 
 #ifndef INPUT_CHANNEL_INDEX
 #define INPUT_CHANNEL_INDEX 18
 #endif
 
-#ifndef PLOT_EVERY_INTERACTIONS
-#define PLOT_EVERY_INTERACTIONS 10
+#ifndef DELAY_THRESHOLD_FRACTION
+#define DELAY_THRESHOLD_FRACTION 0.85
+#endif
+
+#ifndef MINIMUM_INPUT_PEAK
+#define MINIMUM_INPUT_PEAK 1.0e-6
+#endif
+
+#ifndef SAVE_EVERY_INTERACTIONS
+#define SAVE_EVERY_INTERACTIONS 100
 #endif
 
 #ifndef INTERACTION_PAUSE_SECONDS
@@ -148,6 +158,9 @@ struct InteractionCapture
 {
     std::vector<float> full_reference_output;
     std::vector<float> full_captured_input;
+    int delay_samples = -1;
+    double delay_ms = -1.0;
+    double input_peak = 0.0;
     int input_underflow_count = 0;
     int input_overflow_count = 0;
     int output_underflow_count = 0;
@@ -360,6 +373,33 @@ double max_absolute_value(const std::vector<float> &signal)
     return peak;
 }
 
+int infer_delay_samples(
+    const std::vector<float> &captured_input,
+    double *out_peak = nullptr)
+{
+    const double peak = max_absolute_value(captured_input);
+    if (out_peak)
+    {
+        *out_peak = peak;
+    }
+
+    if (peak < MINIMUM_INPUT_PEAK)
+    {
+        return -1;
+    }
+
+    const double threshold = peak * DELAY_THRESHOLD_FRACTION;
+    for (size_t index = 0; index < captured_input.size(); ++index)
+    {
+        if (std::fabs(static_cast<double>(captured_input[index])) >= threshold)
+        {
+            return static_cast<int>(index);
+        }
+    }
+
+    return -1;
+}
+
 std::vector<float> normalize_signal(const std::vector<float> &signal)
 {
     const double peak = max_absolute_value(signal);
@@ -410,39 +450,119 @@ std::filesystem::path plot_script_path()
            "plot_superpose_signals_and_responses.py";
 }
 
-bool plot_csv_with_superpose_script(const std::string &csv_path)
+std::filesystem::path delay_distribution_plot_script_path()
 {
-    const std::filesystem::path script_path = plot_script_path();
+    return std::filesystem::path(PORTABLE_OUTPUT_DIR).parent_path() /
+           "scripts" /
+           "plot_delay_courbe_detector.py";
+}
 
-    int rc = run_plot_command("python3", script_path.string(), csv_path);
-    if (rc == 0)
+bool run_save_plot_with_manual_hint(
+    const std::filesystem::path &script_path,
+    const std::string &csv_path,
+    const std::string &plot_name)
+{
+    const std::vector<std::string> script_args = {csv_path};
+
+    if (run_plot_command("python3", script_path.string(), script_args, false) == 0)
     {
+        std::cout << "Interactive plot command: "
+                  << build_plot_command(
+                         "python3",
+                         script_path.string(),
+                         script_args)
+                  << '\n';
         return true;
     }
 
-    rc = run_plot_command("python", script_path.string(), csv_path);
-    if (rc == 0)
+    if (run_plot_command("python", script_path.string(), script_args, false) == 0)
     {
+        std::cout << "Interactive plot command: "
+                  << build_plot_command(
+                         "python",
+                         script_path.string(),
+                         script_args)
+                  << '\n';
         return true;
     }
 
     std::cerr
-        << "Could not generate superpose_signals_and_responses plot automatically. "
+        << "Could not generate " << plot_name << " plot automatically. "
+        << "Try plotting interactively with: "
+        << build_plot_command("python3", script_path.string(), script_args)
+        << '\n'
         << "The CSV is still available at: " << csv_path << '\n';
     return false;
 }
 
-bool save_latest_interaction_csv(
+std::string build_superpose_show_command(const std::string &csv_path)
+{
+    return build_plot_command(
+        "python3",
+        plot_script_path().string(),
+        {csv_path});
+}
+
+std::string build_delay_distribution_show_command(const std::string &csv_path)
+{
+    return build_plot_command(
+        "python3",
+        delay_distribution_plot_script_path().string(),
+        {csv_path});
+}
+
+void print_manual_plot_commands(
+    const std::string &selected_delays_csv,
+    const std::string &consolidated_csv,
+    const std::string &delay_distribution_csv)
+{
+    std::cout << "Manual plot commands:\n"
+              << "  " << build_superpose_show_command(selected_delays_csv) << '\n'
+              << "  " << build_superpose_show_command(consolidated_csv) << '\n'
+              << "  "
+              << build_delay_distribution_show_command(delay_distribution_csv)
+              << '\n';
+}
+
+bool save_selected_delays_csv(
     const std::string &csv_path,
     const std::vector<float> &normalized_reference,
-    const std::vector<float> &normalized_response)
+    const std::vector<float> &smallest_delay_response,
+    double smallest_delay_ms,
+    const std::vector<float> &median_delay_response,
+    double median_delay_ms,
+    const std::vector<float> &biggest_delay_response,
+    double biggest_delay_ms)
 {
-    if (normalized_reference.size() != normalized_response.size())
+    if (normalized_reference.size() != smallest_delay_response.size() ||
+        normalized_reference.size() != median_delay_response.size() ||
+        normalized_reference.size() != biggest_delay_response.size())
     {
         return false;
     }
 
     std::vector<float> time_ms(normalized_reference.size(), 0.0f);
+    const float smallest_delay_marker_value =
+        smallest_delay_ms >= 0.0
+            ? static_cast<float>(smallest_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float median_delay_marker_value =
+        median_delay_ms >= 0.0
+            ? static_cast<float>(median_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float biggest_delay_marker_value =
+        biggest_delay_ms >= 0.0
+            ? static_cast<float>(biggest_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    std::vector<float> smallest_delay_ms_marker(
+        normalized_reference.size(),
+        smallest_delay_marker_value);
+    std::vector<float> median_delay_ms_marker(
+        normalized_reference.size(),
+        median_delay_marker_value);
+    std::vector<float> biggest_delay_ms_marker(
+        normalized_reference.size(),
+        biggest_delay_marker_value);
     for (size_t i = 0; i < normalized_reference.size(); ++i)
     {
         time_ms[i] = static_cast<float>(
@@ -454,11 +574,21 @@ bool save_latest_interaction_csv(
         {
             "time_ms",
             "normalized_reference",
-            "normalized_response"},
+            "normalized_response_smallest_delay",
+            "delay_ms_marker_smallest",
+            "normalized_response_median_delay",
+            "delay_ms_marker_median",
+            "normalized_response_biggest_delay",
+            "delay_ms_marker_biggest"},
         {
             &time_ms,
             &normalized_reference,
-            &normalized_response});
+            &smallest_delay_response,
+            &smallest_delay_ms_marker,
+            &median_delay_response,
+            &median_delay_ms_marker,
+            &biggest_delay_response,
+            &biggest_delay_ms_marker});
 }
 
 bool save_consolidated_csv(
@@ -487,6 +617,22 @@ bool save_consolidated_csv(
     }
 
     return save_arrays_to_csv(csv_path, headers, columns);
+}
+
+bool save_delay_distribution_csv(
+    const std::string &csv_path,
+    const std::vector<float> &delays_ms)
+{
+    std::vector<float> repetitions(delays_ms.size(), 0.0f);
+    for (size_t i = 0; i < delays_ms.size(); ++i)
+    {
+        repetitions[i] = static_cast<float>(i + 1);
+    }
+
+    return save_arrays_to_csv(
+        csv_path,
+        {"repetition", "delay_ms"},
+        {&repetitions, &delays_ms});
 }
 
 bool capture_single_interaction(
@@ -572,13 +718,11 @@ int main(int argc, char **argv)
     std::signal(SIGINT, handle_interrupt_signal);
 
     long long max_repetitions = 0;
-    bool plots_enabled = true;
     for (int argi = 1; argi < argc; ++argi)
     {
         const std::string arg = argv[argi] ? std::string(argv[argi]) : std::string();
         if (arg == "--no-plots")
         {
-            plots_enabled = false;
             continue;
         }
         if (arg == "--max-repetitions" && argi + 1 < argc)
@@ -741,10 +885,12 @@ int main(int argc, char **argv)
     }
 
     const std::filesystem::path output_dir(PORTABLE_OUTPUT_DIR);
-    const std::string latest_csv =
-        (output_dir / "superpose_signals_and_responses_latest.csv").string();
+    const std::string selected_delays_csv =
+        (output_dir / "superpose_signals_and_responses_selected_delays.csv").string();
     const std::string consolidated_csv =
         (output_dir / "superpose_signals_and_responses_consolidated.csv").string();
+    const std::string delay_distribution_csv =
+        (output_dir / "superpose_signals_and_responses_delay_distribuition.csv").string();
 
     const std::vector<float> normalized_reference =
         normalize_signal(slice_signal(
@@ -752,7 +898,64 @@ int main(int argc, char **argv)
             pre_roll_frames,
             interaction_frames));
     std::vector<std::vector<float>> consolidated_responses;
+    std::vector<std::pair<double, std::vector<float>>> delay_ranked_responses;
+    std::vector<float> delays_ms;
+    bool selected_delays_dirty = false;
+    bool consolidated_dirty = false;
+    bool distribution_dirty = false;
     long long repetition = 0;
+
+    const auto flush_saved_csvs = [&](bool print_commands) {
+        bool saved_any_csv = false;
+
+        if (selected_delays_dirty &&
+            !delay_ranked_responses.empty())
+        {
+            const size_t median_index = delay_ranked_responses.size() / 2;
+            const auto &smallest = delay_ranked_responses.front();
+            const auto &median = delay_ranked_responses[median_index];
+            const auto &biggest = delay_ranked_responses.back();
+            if (save_selected_delays_csv(
+                    selected_delays_csv,
+                    normalized_reference,
+                    smallest.second,
+                    smallest.first,
+                    median.second,
+                    median.first,
+                    biggest.second,
+                    biggest.first))
+            {
+                selected_delays_dirty = false;
+                saved_any_csv = true;
+            }
+        }
+
+        if (consolidated_dirty &&
+            save_consolidated_csv(
+                consolidated_csv,
+                normalized_reference,
+                consolidated_responses))
+        {
+            consolidated_dirty = false;
+            saved_any_csv = true;
+        }
+
+        if (distribution_dirty &&
+            !delays_ms.empty() &&
+            save_delay_distribution_csv(delay_distribution_csv, delays_ms))
+        {
+            distribution_dirty = false;
+            saved_any_csv = true;
+        }
+
+        if (saved_any_csv && print_commands)
+        {
+            print_manual_plot_commands(
+                selected_delays_csv,
+                consolidated_csv,
+                delay_distribution_csv);
+        }
+    };
 
     while (g_keep_running.load() &&
            (max_repetitions == 0 || repetition < max_repetitions))
@@ -769,7 +972,15 @@ int main(int argc, char **argv)
             interaction_frames);
         const std::vector<float> normalized_response =
             normalize_signal(interaction_response);
+        interaction_capture.delay_samples = infer_delay_samples(
+            interaction_response,
+            &interaction_capture.input_peak);
+        interaction_capture.delay_ms =
+            interaction_capture.delay_samples >= 0
+                ? samples_to_milliseconds(interaction_capture.delay_samples)
+                : -1.0;
         consolidated_responses.push_back(normalized_response);
+        consolidated_dirty = true;
 
         double mean_square = 0.0;
         if (!interaction_response.empty())
@@ -786,6 +997,9 @@ int main(int argc, char **argv)
 
         std::cout << "rep=" << repetition
                   << " selected_input_channel=" << (INPUT_CHANNEL_INDEX + 1)
+                  << " delay_samples=" << interaction_capture.delay_samples
+                  << " delay_ms=" << interaction_capture.delay_ms
+                  << " input_peak=" << interaction_capture.input_peak
                   << " selected_input_mean_square=" << mean_square
                   << " raw_input_peak=" << max_absolute_value(interaction_response)
                   << " in_under=" << interaction_capture.input_underflow_count
@@ -794,37 +1008,40 @@ int main(int argc, char **argv)
                   << " out_over=" << interaction_capture.output_overflow_count
                   << '\n';
 
-        const bool should_plot_now =
-            plots_enabled && (repetition % PLOT_EVERY_INTERACTIONS) == 0;
-
-        if (save_latest_interaction_csv(
-                latest_csv,
-                normalized_reference,
-                normalized_response))
+        if (interaction_capture.delay_samples < 0)
         {
-            if (should_plot_now)
-            {
-                plot_csv_with_superpose_script(latest_csv);
-            }
+            std::cerr << "No valid delay was detected for repetition "
+                      << repetition << ".\n";
+        }
+        else
+        {
+            delay_ranked_responses.emplace_back(
+                interaction_capture.delay_ms,
+                normalized_response);
+            std::sort(
+                delay_ranked_responses.begin(),
+                delay_ranked_responses.end(),
+                [](const auto &lhs, const auto &rhs) {
+                    return lhs.first < rhs.first;
+                });
+            selected_delays_dirty = true;
+            delays_ms.push_back(static_cast<float>(interaction_capture.delay_ms));
+            distribution_dirty = true;
         }
 
-        if (save_consolidated_csv(
-                consolidated_csv,
-                normalized_reference,
-                consolidated_responses))
+        if ((repetition % SAVE_EVERY_INTERACTIONS) == 0)
         {
-            if (should_plot_now)
-            {
-                plot_csv_with_superpose_script(consolidated_csv);
-            }
+            flush_saved_csvs(true);
         }
 
         if (g_keep_running.load())
         {
             std::this_thread::sleep_for(
-                std::chrono::duration<double>(INTERACTION_PAUSE_SECONDS));
+            std::chrono::duration<double>(INTERACTION_PAUSE_SECONDS));
         }
     }
+
+    flush_saved_csvs(true);
 
     if (stream)
     {

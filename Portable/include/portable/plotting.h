@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #ifndef PORTABLE_PLOT_SCRIPT
 #define PORTABLE_PLOT_SCRIPT "scripts/plot.py"
@@ -26,15 +27,48 @@ inline std::string portable_shell_quote(const std::string &s)
     return out;
 }
 
-inline int run_plot_command(const std::string &launcher, const std::string &script_path, const std::string &csv_path)
+inline std::string build_plot_command(
+    const std::string &launcher,
+    const std::string &script_path,
+    const std::vector<std::string> &script_args)
+{
+    std::string command =
+        launcher + " " +
+        portable_shell_quote(script_path);
+
+    for (const std::string &arg : script_args)
+    {
+        command += " " + portable_shell_quote(arg);
+    }
+
+    return command;
+}
+
+inline int run_plot_command(
+    const std::string &launcher,
+    const std::string &script_path,
+    const std::vector<std::string> &script_args,
+    bool print_command = true)
 {
     const std::string command =
-        launcher + " " +
-        portable_shell_quote(script_path) + " " +
-        portable_shell_quote(csv_path);
+        build_plot_command(launcher, script_path, script_args);
 
-    std::cout << "Plot command: " << command << '\n';
+    if (print_command)
+    {
+        std::cout << "Plot command: " << command << '\n';
+    }
     return std::system(command.c_str());
+}
+
+inline int run_plot_command(
+    const std::string &launcher,
+    const std::string &script_path,
+    const std::string &csv_path)
+{
+    return run_plot_command(
+        launcher,
+        script_path,
+        std::vector<std::string>{csv_path});
 }
 
 inline bool plot_csv_with_portable_script(const std::string &csv_path)
