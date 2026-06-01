@@ -14,8 +14,7 @@ Run:
 Optional:
   ./Portable/build/portable_superpose_signals_and_responses --max-repetitions 10
 
-This app reuses the shared sound-device config for device name, channel count,
-and sample format, but it forces:
+This app keeps its own local device/channel/sample-format defaults and forces:
   SAMPLE_RATE = 44100
   FRAMES_PER_BUFFER = 512
 
@@ -66,7 +65,13 @@ Behavior:
 #define FRAMES_PER_BUFFER 512
 #endif
 
-#include "portable/sound_device_query_config.h"
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
+#endif
+
+#ifndef CHANNELS
+#define CHANNELS 32
+#endif
 
 #ifndef SAMPLE_FORMAT
 #define SAMPLE_FORMAT paFloat32
