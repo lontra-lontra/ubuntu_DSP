@@ -81,15 +81,15 @@ Behavior:
 #endif
 
 #ifndef BURST_COUNT
-#define BURST_COUNT 10
+#define BURST_COUNT 5
 #endif
 
 #ifndef BURST_TONE_SECONDS
-#define BURST_TONE_SECONDS 0.01
+#define BURST_TONE_SECONDS 0.005
 #endif
 
 #ifndef BURST_SILENCE_SECONDS
-#define BURST_SILENCE_SECONDS 0.01
+#define BURST_SILENCE_SECONDS 0.05
 #endif
 
 #ifndef OUTPUT_CHANNEL_INDEX
@@ -101,7 +101,7 @@ Behavior:
 #endif
 
 #ifndef DELAY_THRESHOLD_FRACTION
-#define DELAY_THRESHOLD_FRACTION 0.85
+#define DELAY_THRESHOLD_FRACTION 0.75
 #endif
 
 #ifndef MINIMUM_INPUT_PEAK
