@@ -39,6 +39,8 @@ Behavior:
 #include <cmath>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -147,34 +149,165 @@ constexpr double kPreRollSeconds = 0.05;
 
 std::atomic<bool> g_keep_running{true};
 
+struct CallbackTraceRow
+{
+    long long repetition = 0;
+    int callback_index = 0;
+    int absolute_frame_start = 0;
+    int frames_per_buffer = 0;
+    int frames_to_process = 0;
+    unsigned long status_flags = 0;
+    double input_buffer_adc_time = std::numeric_limits<double>::quiet_NaN();
+    double current_time = std::numeric_limits<double>::quiet_NaN();
+    double output_buffer_dac_time = std::numeric_limits<double>::quiet_NaN();
+};
+
 struct SuperposeCaptureData
 {
     const float *reference_output = nullptr;
     float *captured_input = nullptr;
+    double *input_adc_times = nullptr;
+    double *output_dac_times = nullptr;
+    long long repetition = 0;
+    int callback_index = 0;
     int frame_index = 0;
     int max_frames = 0;
     int input_underflow_count = 0;
     int input_overflow_count = 0;
     int output_underflow_count = 0;
     int output_overflow_count = 0;
+    std::vector<CallbackTraceRow> *callback_trace_rows = nullptr;
 };
 
 struct InteractionCapture
 {
     std::vector<float> full_reference_output;
     std::vector<float> full_captured_input;
+    std::vector<double> full_input_adc_times;
+    std::vector<double> full_output_dac_times;
     int delay_samples = -1;
     double delay_ms = -1.0;
     double input_peak = 0.0;
+    double mean_square = 0.0;
+    int detected_input_frame_absolute = -1;
+    double detected_input_adc_time = std::numeric_limits<double>::quiet_NaN();
+    int first_tone_output_frame_absolute = -1;
+    double first_tone_output_dac_time = std::numeric_limits<double>::quiet_NaN();
+    double timestamp_corrected_delay_samples = std::numeric_limits<double>::quiet_NaN();
+    double timestamp_corrected_delay_ms = std::numeric_limits<double>::quiet_NaN();
     int input_underflow_count = 0;
     int input_overflow_count = 0;
     int output_underflow_count = 0;
     int output_overflow_count = 0;
 };
 
+struct InteractionTimingSummary
+{
+    long long repetition = 0;
+    int raw_delay_samples = -1;
+    double raw_delay_ms = -1.0;
+    double input_peak = 0.0;
+    double mean_square = 0.0;
+    int detected_input_frame_absolute = -1;
+    double detected_input_adc_time = std::numeric_limits<double>::quiet_NaN();
+    int first_tone_output_frame_absolute = -1;
+    double first_tone_output_dac_time = std::numeric_limits<double>::quiet_NaN();
+    double timestamp_corrected_delay_samples = std::numeric_limits<double>::quiet_NaN();
+    double timestamp_corrected_delay_ms = std::numeric_limits<double>::quiet_NaN();
+    int callback_count = 0;
+    int priming_callback_count = 0;
+    double first_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double min_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double max_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double avg_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    int input_underflow_count = 0;
+    int input_overflow_count = 0;
+    int output_underflow_count = 0;
+    int output_overflow_count = 0;
+    double stream_input_latency_seconds = std::numeric_limits<double>::quiet_NaN();
+    double stream_output_latency_seconds = std::numeric_limits<double>::quiet_NaN();
+    double stream_sample_rate = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct CallbackRangeStats
+{
+    int callback_count = 0;
+    int priming_callback_count = 0;
+    double first_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double min_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double max_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+    double avg_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct StreamInfoSnapshot
+{
+    double input_latency_seconds = std::numeric_limits<double>::quiet_NaN();
+    double output_latency_seconds = std::numeric_limits<double>::quiet_NaN();
+    double sample_rate = std::numeric_limits<double>::quiet_NaN();
+};
+
 void handle_interrupt_signal(int)
 {
     g_keep_running.store(false);
+}
+
+double seconds_to_samples(double seconds)
+{
+    return seconds * static_cast<double>(SAMPLE_RATE);
+}
+
+double quiet_nan()
+{
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+bool is_finite_number(double value)
+{
+    return std::isfinite(value);
+}
+
+PaError abort_or_stop_stream(PaStream *stream)
+{
+#if MOCK
+    return Pa_StopStream(stream);
+#else
+    return Pa_AbortStream(stream);
+#endif
+}
+
+bool stop_error_is_acceptable(PaError error)
+{
+#if MOCK
+    return error == paNoError;
+#else
+    return error == paNoError || error == paStreamIsStopped;
+#endif
+}
+
+StreamInfoSnapshot get_stream_info_snapshot(PaStream *stream)
+{
+    StreamInfoSnapshot snapshot;
+
+    if (!stream)
+    {
+        return snapshot;
+    }
+
+#if MOCK
+    snapshot.input_latency_seconds = stream->inputParams.suggestedLatency;
+    snapshot.output_latency_seconds = stream->outputParams.suggestedLatency;
+    snapshot.sample_rate = stream->sampleRate;
+#else
+    const PaStreamInfo *stream_info = Pa_GetStreamInfo(stream);
+    if (stream_info)
+    {
+        snapshot.input_latency_seconds = stream_info->inputLatency;
+        snapshot.output_latency_seconds = stream_info->outputLatency;
+        snapshot.sample_rate = stream_info->sampleRate;
+    }
+#endif
+
+    return snapshot;
 }
 
 void print_requested_config()
@@ -269,7 +402,7 @@ int superpose_callback(
     const void *inputBuffer,
     void *outputBuffer,
     unsigned long framesPerBuffer,
-    const PaStreamCallbackTimeInfo *,
+    const PaStreamCallbackTimeInfo *timeInfo,
     PaStreamCallbackFlags statusFlags,
     void *userData)
 {
@@ -303,12 +436,48 @@ int superpose_callback(
     const int frames_to_process =
         std::max(0, std::min(static_cast<int>(framesPerBuffer), frames_left));
 
+    if (data->callback_trace_rows)
+    {
+        CallbackTraceRow row;
+        row.repetition = data->repetition;
+        row.callback_index = data->callback_index;
+        row.absolute_frame_start = data->frame_index;
+        row.frames_per_buffer = static_cast<int>(framesPerBuffer);
+        row.frames_to_process = frames_to_process;
+        row.status_flags = statusFlags;
+        if (timeInfo)
+        {
+            row.input_buffer_adc_time = timeInfo->inputBufferAdcTime;
+            row.current_time = timeInfo->currentTime;
+            row.output_buffer_dac_time = timeInfo->outputBufferDacTime;
+        }
+        data->callback_trace_rows->push_back(row);
+    }
+
     for (int i = 0; i < frames_to_process; ++i)
     {
         const int absolute_frame = data->frame_index + i;
         const float output_sample = data->reference_output[absolute_frame];
         data->captured_input[absolute_frame] =
             input ? input[i * CHANNELS + INPUT_CHANNEL_INDEX] : 0.0f;
+        if (data->input_adc_times)
+        {
+            data->input_adc_times[absolute_frame] =
+                timeInfo
+                    ? timeInfo->inputBufferAdcTime +
+                          static_cast<double>(i) /
+                              static_cast<double>(SAMPLE_RATE)
+                    : quiet_nan();
+        }
+        if (data->output_dac_times)
+        {
+            data->output_dac_times[absolute_frame] =
+                timeInfo
+                    ? timeInfo->outputBufferDacTime +
+                          static_cast<double>(i) /
+                              static_cast<double>(SAMPLE_RATE)
+                    : quiet_nan();
+        }
 
         for (int channel = 0; channel < CHANNELS; ++channel)
         {
@@ -325,6 +494,7 @@ int superpose_callback(
         }
     }
 
+    data->callback_index++;
     data->frame_index += frames_to_process;
     return data->frame_index >= data->max_frames ? paComplete : paContinue;
 }
@@ -446,6 +616,232 @@ double samples_to_milliseconds(int sample_count)
     return 1000.0 *
            static_cast<double>(sample_count) /
            static_cast<double>(SAMPLE_RATE);
+}
+
+int first_tone_start_frame_in_interaction()
+{
+    return static_cast<int>(std::llround(
+        BURST_SILENCE_SECONDS * static_cast<double>(SAMPLE_RATE)));
+}
+
+double output_minus_input_samples(const CallbackTraceRow &row)
+{
+    if (!is_finite_number(row.output_buffer_dac_time) ||
+        !is_finite_number(row.input_buffer_adc_time))
+    {
+        return quiet_nan();
+    }
+
+    return seconds_to_samples(
+        row.output_buffer_dac_time - row.input_buffer_adc_time);
+}
+
+CallbackRangeStats summarize_callback_rows(
+    const std::vector<CallbackTraceRow> &rows,
+    size_t begin_index,
+    size_t end_index)
+{
+    CallbackRangeStats stats;
+    double sum_output_minus_input_samples = 0.0;
+    int finite_output_minus_input_count = 0;
+
+    for (size_t index = begin_index; index < end_index; ++index)
+    {
+        const CallbackTraceRow &row = rows[index];
+        stats.callback_count++;
+
+        if ((row.status_flags & paPrimingOutput) != 0)
+        {
+            stats.priming_callback_count++;
+        }
+
+        const double row_output_minus_input_samples =
+            output_minus_input_samples(row);
+        if (!is_finite_number(row_output_minus_input_samples))
+        {
+            continue;
+        }
+
+        if (finite_output_minus_input_count == 0)
+        {
+            stats.first_output_minus_input_samples =
+                row_output_minus_input_samples;
+            stats.min_output_minus_input_samples =
+                row_output_minus_input_samples;
+            stats.max_output_minus_input_samples =
+                row_output_minus_input_samples;
+        }
+        else
+        {
+            stats.min_output_minus_input_samples = std::min(
+                stats.min_output_minus_input_samples,
+                row_output_minus_input_samples);
+            stats.max_output_minus_input_samples = std::max(
+                stats.max_output_minus_input_samples,
+                row_output_minus_input_samples);
+        }
+
+        sum_output_minus_input_samples += row_output_minus_input_samples;
+        finite_output_minus_input_count++;
+    }
+
+    if (finite_output_minus_input_count > 0)
+    {
+        stats.avg_output_minus_input_samples =
+            sum_output_minus_input_samples /
+            static_cast<double>(finite_output_minus_input_count);
+    }
+
+    return stats;
+}
+
+bool save_callback_trace_csv(
+    const std::string &csv_path,
+    const std::vector<CallbackTraceRow> &rows)
+{
+    if (!ensure_parent_directory(csv_path))
+    {
+        return false;
+    }
+
+    std::ofstream out(csv_path);
+    if (!out.is_open())
+    {
+        return false;
+    }
+
+    out << std::setprecision(17);
+    out << "repetition"
+        << ';' << "callback_index"
+        << ';' << "absolute_frame_start"
+        << ';' << "frames_per_buffer"
+        << ';' << "frames_to_process"
+        << ';' << "status_flags"
+        << ';' << "pa_priming_output"
+        << ';' << "pa_input_underflow"
+        << ';' << "pa_input_overflow"
+        << ';' << "pa_output_underflow"
+        << ';' << "pa_output_overflow"
+        << ';' << "input_buffer_adc_time_seconds"
+        << ';' << "current_time_seconds"
+        << ';' << "output_buffer_dac_time_seconds"
+        << ';' << "output_minus_input_samples"
+        << ';' << "current_minus_input_samples"
+        << ';' << "output_minus_current_samples"
+        << '\n';
+
+    for (const CallbackTraceRow &row : rows)
+    {
+        const double output_minus_input =
+            output_minus_input_samples(row);
+        const double current_minus_input =
+            is_finite_number(row.current_time) &&
+                    is_finite_number(row.input_buffer_adc_time)
+                ? seconds_to_samples(
+                      row.current_time - row.input_buffer_adc_time)
+                : quiet_nan();
+        const double output_minus_current =
+            is_finite_number(row.output_buffer_dac_time) &&
+                    is_finite_number(row.current_time)
+                ? seconds_to_samples(
+                      row.output_buffer_dac_time - row.current_time)
+                : quiet_nan();
+
+        out << row.repetition
+            << ';' << row.callback_index
+            << ';' << row.absolute_frame_start
+            << ';' << row.frames_per_buffer
+            << ';' << row.frames_to_process
+            << ';' << row.status_flags
+            << ';' << (((row.status_flags & paPrimingOutput) != 0) ? 1 : 0)
+            << ';' << (((row.status_flags & paInputUnderflow) != 0) ? 1 : 0)
+            << ';' << (((row.status_flags & paInputOverflow) != 0) ? 1 : 0)
+            << ';' << (((row.status_flags & paOutputUnderflow) != 0) ? 1 : 0)
+            << ';' << (((row.status_flags & paOutputOverflow) != 0) ? 1 : 0)
+            << ';' << row.input_buffer_adc_time
+            << ';' << row.current_time
+            << ';' << row.output_buffer_dac_time
+            << ';' << output_minus_input
+            << ';' << current_minus_input
+            << ';' << output_minus_current
+            << '\n';
+    }
+
+    return true;
+}
+
+bool save_timing_summary_csv(
+    const std::string &csv_path,
+    const std::vector<InteractionTimingSummary> &rows)
+{
+    if (!ensure_parent_directory(csv_path))
+    {
+        return false;
+    }
+
+    std::ofstream out(csv_path);
+    if (!out.is_open())
+    {
+        return false;
+    }
+
+    out << std::setprecision(17);
+    out << "repetition"
+        << ';' << "raw_delay_samples"
+        << ';' << "raw_delay_ms"
+        << ';' << "input_peak"
+        << ';' << "mean_square"
+        << ';' << "detected_input_frame_absolute"
+        << ';' << "detected_input_adc_time_seconds"
+        << ';' << "first_tone_output_frame_absolute"
+        << ';' << "first_tone_output_dac_time_seconds"
+        << ';' << "timestamp_corrected_delay_samples"
+        << ';' << "timestamp_corrected_delay_ms"
+        << ';' << "callback_count"
+        << ';' << "priming_callback_count"
+        << ';' << "first_output_minus_input_samples"
+        << ';' << "min_output_minus_input_samples"
+        << ';' << "max_output_minus_input_samples"
+        << ';' << "avg_output_minus_input_samples"
+        << ';' << "input_underflow_count"
+        << ';' << "input_overflow_count"
+        << ';' << "output_underflow_count"
+        << ';' << "output_overflow_count"
+        << ';' << "stream_input_latency_seconds"
+        << ';' << "stream_output_latency_seconds"
+        << ';' << "stream_sample_rate"
+        << '\n';
+
+    for (const InteractionTimingSummary &row : rows)
+    {
+        out << row.repetition
+            << ';' << row.raw_delay_samples
+            << ';' << row.raw_delay_ms
+            << ';' << row.input_peak
+            << ';' << row.mean_square
+            << ';' << row.detected_input_frame_absolute
+            << ';' << row.detected_input_adc_time
+            << ';' << row.first_tone_output_frame_absolute
+            << ';' << row.first_tone_output_dac_time
+            << ';' << row.timestamp_corrected_delay_samples
+            << ';' << row.timestamp_corrected_delay_ms
+            << ';' << row.callback_count
+            << ';' << row.priming_callback_count
+            << ';' << row.first_output_minus_input_samples
+            << ';' << row.min_output_minus_input_samples
+            << ';' << row.max_output_minus_input_samples
+            << ';' << row.avg_output_minus_input_samples
+            << ';' << row.input_underflow_count
+            << ';' << row.input_overflow_count
+            << ';' << row.output_underflow_count
+            << ';' << row.output_overflow_count
+            << ';' << row.stream_input_latency_seconds
+            << ';' << row.stream_output_latency_seconds
+            << ';' << row.stream_sample_rate
+            << '\n';
+    }
+
+    return true;
 }
 
 std::filesystem::path plot_script_path()
@@ -643,7 +1039,8 @@ bool save_delay_distribution_csv(
 bool capture_single_interaction(
     PaStream *stream,
     SuperposeCaptureData *capture_data,
-    InteractionCapture *interaction_capture)
+    InteractionCapture *interaction_capture,
+    long long repetition)
 {
     if (!stream || !capture_data || !interaction_capture)
     {
@@ -654,10 +1051,24 @@ bool capture_single_interaction(
         interaction_capture->full_captured_input.begin(),
         interaction_capture->full_captured_input.end(),
         0.0f);
+    std::fill(
+        interaction_capture->full_input_adc_times.begin(),
+        interaction_capture->full_input_adc_times.end(),
+        quiet_nan());
+    std::fill(
+        interaction_capture->full_output_dac_times.begin(),
+        interaction_capture->full_output_dac_times.end(),
+        quiet_nan());
     capture_data->reference_output =
         interaction_capture->full_reference_output.data();
     capture_data->captured_input =
         interaction_capture->full_captured_input.data();
+    capture_data->input_adc_times =
+        interaction_capture->full_input_adc_times.data();
+    capture_data->output_dac_times =
+        interaction_capture->full_output_dac_times.data();
+    capture_data->repetition = repetition;
+    capture_data->callback_index = 0;
     capture_data->frame_index = 0;
     capture_data->max_frames =
         static_cast<int>(interaction_capture->full_reference_output.size());
@@ -685,7 +1096,7 @@ bool capture_single_interaction(
         {
             std::cerr << "Pa_IsStreamActive failed: "
                       << Pa_GetErrorText(active_state) << '\n';
-            Pa_AbortStream(stream);
+            abort_or_stop_stream(stream);
             return false;
         }
         Pa_Sleep(2);
@@ -693,12 +1104,12 @@ bool capture_single_interaction(
 
     if (!g_keep_running.load())
     {
-        Pa_AbortStream(stream);
+        abort_or_stop_stream(stream);
         return false;
     }
 
     const PaError stop_error = Pa_StopStream(stream);
-    if (stop_error != paNoError && stop_error != paStreamIsStopped)
+    if (!stop_error_is_acceptable(stop_error))
     {
         std::cerr << "Pa_StopStream failed: " << Pa_GetErrorText(stop_error)
                   << '\n';
@@ -864,9 +1275,17 @@ int main(int argc, char **argv)
     interaction_capture.full_captured_input.assign(
         static_cast<size_t>(total_capture_frames),
         0.0f);
+    interaction_capture.full_input_adc_times.assign(
+        static_cast<size_t>(total_capture_frames),
+        quiet_nan());
+    interaction_capture.full_output_dac_times.assign(
+        static_cast<size_t>(total_capture_frames),
+        quiet_nan());
 
     SuperposeCaptureData capture_data{};
     capture_data.max_frames = total_capture_frames;
+    std::vector<CallbackTraceRow> callback_trace_rows;
+    capture_data.callback_trace_rows = &callback_trace_rows;
 
     PaStream *stream = nullptr;
     const PaError open_error = Pa_OpenStream(
@@ -889,6 +1308,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    const StreamInfoSnapshot stream_info = get_stream_info_snapshot(stream);
+    if (is_finite_number(stream_info.sample_rate))
+    {
+        std::cout << "Opened stream info:"
+                  << " inputLatency=" << stream_info.input_latency_seconds
+                  << "s outputLatency=" << stream_info.output_latency_seconds
+                  << "s sampleRate=" << stream_info.sample_rate
+                  << '\n';
+    }
+
     const std::filesystem::path output_dir(PORTABLE_OUTPUT_DIR);
     const std::string selected_delays_csv =
         (output_dir / "superpose_signals_and_responses_selected_delays.csv").string();
@@ -896,18 +1325,27 @@ int main(int argc, char **argv)
         (output_dir / "superpose_signals_and_responses_consolidated.csv").string();
     const std::string delay_distribution_csv =
         (output_dir / "superpose_signals_and_responses_delay_distribuition.csv").string();
+    const std::string timing_summary_csv =
+        (output_dir / "superpose_signals_and_responses_timing_summary.csv").string();
+    const std::string callback_trace_csv =
+        (output_dir / "superpose_signals_and_responses_callback_trace.csv").string();
 
     const std::vector<float> normalized_reference =
         normalize_signal(slice_signal(
             interaction_capture.full_reference_output,
             pre_roll_frames,
             interaction_frames));
+    const int first_tone_output_frame_absolute =
+        pre_roll_frames + first_tone_start_frame_in_interaction();
     std::vector<std::vector<float>> consolidated_responses;
     std::vector<std::pair<double, std::vector<float>>> delay_ranked_responses;
     std::vector<float> delays_ms;
+    std::vector<InteractionTimingSummary> timing_summaries;
     bool selected_delays_dirty = false;
     bool consolidated_dirty = false;
     bool distribution_dirty = false;
+    bool timing_summary_dirty = false;
+    bool callback_trace_dirty = false;
     long long repetition = 0;
 
     const auto flush_saved_csvs = [&](bool print_commands) {
@@ -953,12 +1391,29 @@ int main(int argc, char **argv)
             saved_any_csv = true;
         }
 
+        if (timing_summary_dirty &&
+            save_timing_summary_csv(timing_summary_csv, timing_summaries))
+        {
+            timing_summary_dirty = false;
+            saved_any_csv = true;
+        }
+
+        if (callback_trace_dirty &&
+            save_callback_trace_csv(callback_trace_csv, callback_trace_rows))
+        {
+            callback_trace_dirty = false;
+            saved_any_csv = true;
+        }
+
         if (saved_any_csv && print_commands)
         {
             print_manual_plot_commands(
                 selected_delays_csv,
                 consolidated_csv,
                 delay_distribution_csv);
+            std::cout << "Timing diagnostics CSVs:\n"
+                      << "  " << timing_summary_csv << '\n'
+                      << "  " << callback_trace_csv << '\n';
         }
     };
 
@@ -966,10 +1421,16 @@ int main(int argc, char **argv)
            (max_repetitions == 0 || repetition < max_repetitions))
     {
         repetition++;
-        if (!capture_single_interaction(stream, &capture_data, &interaction_capture))
+        const size_t callback_trace_begin = callback_trace_rows.size();
+        if (!capture_single_interaction(
+                stream,
+                &capture_data,
+                &interaction_capture,
+                repetition))
         {
             break;
         }
+        const size_t callback_trace_end = callback_trace_rows.size();
 
         const std::vector<float> interaction_response = slice_signal(
             interaction_capture.full_captured_input,
@@ -987,7 +1448,7 @@ int main(int argc, char **argv)
         consolidated_responses.push_back(normalized_response);
         consolidated_dirty = true;
 
-        double mean_square = 0.0;
+        interaction_capture.mean_square = 0.0;
         if (!interaction_response.empty())
         {
             double square_sum = 0.0;
@@ -996,17 +1457,116 @@ int main(int argc, char **argv)
                 const double value = static_cast<double>(sample);
                 square_sum += value * value;
             }
-            mean_square =
+            interaction_capture.mean_square =
                 square_sum / static_cast<double>(interaction_response.size());
         }
+
+        interaction_capture.first_tone_output_frame_absolute =
+            first_tone_output_frame_absolute;
+        interaction_capture.first_tone_output_dac_time =
+            first_tone_output_frame_absolute >= 0 &&
+                    first_tone_output_frame_absolute <
+                        static_cast<int>(interaction_capture.full_output_dac_times.size())
+                ? interaction_capture.full_output_dac_times[static_cast<size_t>(
+                      first_tone_output_frame_absolute)]
+                : quiet_nan();
+
+        interaction_capture.detected_input_frame_absolute =
+            interaction_capture.delay_samples >= 0
+                ? pre_roll_frames + interaction_capture.delay_samples
+                : -1;
+        interaction_capture.detected_input_adc_time =
+            interaction_capture.detected_input_frame_absolute >= 0 &&
+                    interaction_capture.detected_input_frame_absolute <
+                        static_cast<int>(interaction_capture.full_input_adc_times.size())
+                ? interaction_capture.full_input_adc_times[static_cast<size_t>(
+                      interaction_capture.detected_input_frame_absolute)]
+                : quiet_nan();
+
+        interaction_capture.timestamp_corrected_delay_samples = quiet_nan();
+        interaction_capture.timestamp_corrected_delay_ms = quiet_nan();
+        if (is_finite_number(interaction_capture.detected_input_adc_time) &&
+            is_finite_number(interaction_capture.first_tone_output_dac_time))
+        {
+            const double corrected_delay_seconds =
+                interaction_capture.detected_input_adc_time -
+                interaction_capture.first_tone_output_dac_time;
+            interaction_capture.timestamp_corrected_delay_samples =
+                seconds_to_samples(corrected_delay_seconds);
+            interaction_capture.timestamp_corrected_delay_ms =
+                1000.0 * corrected_delay_seconds;
+        }
+
+        const CallbackRangeStats callback_stats =
+            summarize_callback_rows(
+                callback_trace_rows,
+                callback_trace_begin,
+                callback_trace_end);
+
+        InteractionTimingSummary timing_summary;
+        timing_summary.repetition = repetition;
+        timing_summary.raw_delay_samples = interaction_capture.delay_samples;
+        timing_summary.raw_delay_ms = interaction_capture.delay_ms;
+        timing_summary.input_peak = interaction_capture.input_peak;
+        timing_summary.mean_square = interaction_capture.mean_square;
+        timing_summary.detected_input_frame_absolute =
+            interaction_capture.detected_input_frame_absolute;
+        timing_summary.detected_input_adc_time =
+            interaction_capture.detected_input_adc_time;
+        timing_summary.first_tone_output_frame_absolute =
+            interaction_capture.first_tone_output_frame_absolute;
+        timing_summary.first_tone_output_dac_time =
+            interaction_capture.first_tone_output_dac_time;
+        timing_summary.timestamp_corrected_delay_samples =
+            interaction_capture.timestamp_corrected_delay_samples;
+        timing_summary.timestamp_corrected_delay_ms =
+            interaction_capture.timestamp_corrected_delay_ms;
+        timing_summary.callback_count = callback_stats.callback_count;
+        timing_summary.priming_callback_count =
+            callback_stats.priming_callback_count;
+        timing_summary.first_output_minus_input_samples =
+            callback_stats.first_output_minus_input_samples;
+        timing_summary.min_output_minus_input_samples =
+            callback_stats.min_output_minus_input_samples;
+        timing_summary.max_output_minus_input_samples =
+            callback_stats.max_output_minus_input_samples;
+        timing_summary.avg_output_minus_input_samples =
+            callback_stats.avg_output_minus_input_samples;
+        timing_summary.input_underflow_count =
+            interaction_capture.input_underflow_count;
+        timing_summary.input_overflow_count =
+            interaction_capture.input_overflow_count;
+        timing_summary.output_underflow_count =
+            interaction_capture.output_underflow_count;
+        timing_summary.output_overflow_count =
+            interaction_capture.output_overflow_count;
+        timing_summary.stream_input_latency_seconds =
+            stream_info.input_latency_seconds;
+        timing_summary.stream_output_latency_seconds =
+            stream_info.output_latency_seconds;
+        timing_summary.stream_sample_rate =
+            stream_info.sample_rate;
+        timing_summaries.push_back(timing_summary);
+        timing_summary_dirty = true;
+        callback_trace_dirty = true;
 
         std::cout << "rep=" << repetition
                   << " selected_input_channel=" << (INPUT_CHANNEL_INDEX + 1)
                   << " delay_samples=" << interaction_capture.delay_samples
                   << " delay_ms=" << interaction_capture.delay_ms
                   << " input_peak=" << interaction_capture.input_peak
-                  << " selected_input_mean_square=" << mean_square
+                  << " selected_input_mean_square="
+                  << interaction_capture.mean_square
                   << " raw_input_peak=" << max_absolute_value(interaction_response)
+                  << " corrected_delay_samples="
+                  << interaction_capture.timestamp_corrected_delay_samples
+                  << " corrected_delay_ms="
+                  << interaction_capture.timestamp_corrected_delay_ms
+                  << " cb_out_minus_in_first_samples="
+                  << callback_stats.first_output_minus_input_samples
+                  << " cb_out_minus_in_avg_samples="
+                  << callback_stats.avg_output_minus_input_samples
+                  << " priming_callbacks=" << callback_stats.priming_callback_count
                   << " in_under=" << interaction_capture.input_underflow_count
                   << " in_over=" << interaction_capture.input_overflow_count
                   << " out_under=" << interaction_capture.output_underflow_count
