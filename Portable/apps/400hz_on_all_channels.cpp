@@ -55,7 +55,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #endif
 
 #ifndef TONE_FREQUENCY_HZ
-#define TONE_FREQUENCY_HZ 400.0
+#define TONE_FREQUENCY_HZ 200.0
 #endif
 
 #ifndef TONE_SECONDS
@@ -67,7 +67,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #endif
 
 #ifndef TONE_AMPLITUDE
-#define TONE_AMPLITUDE 0.8
+#define TONE_AMPLITUDE 0.5
 #endif
 
 #if MOCK
