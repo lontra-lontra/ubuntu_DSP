@@ -38,9 +38,9 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #error "MOCK must be defined by the build system for this target."
 #endif
 
-#define CHANNELS 2
+#define CHANNELS 32
 
-#define DEVICE_NAME "default"
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
 
 #ifndef FRAMES_PER_BUFFER
 #define FRAMES_PER_BUFFER 32
