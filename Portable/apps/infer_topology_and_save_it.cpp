@@ -43,7 +43,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
 
 #ifndef FRAMES_PER_BUFFER
-#define FRAMES_PER_BUFFER 32
+#define FRAMES_PER_BUFFER 128
 #endif
 
 #ifndef SAMPLE_FORMAT
@@ -51,7 +51,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #endif
 
 #ifndef SAMPLE_RATE
-#define SAMPLE_RATE 48000
+#define SAMPLE_RATE 44100
 #endif
 
 #ifndef SWEEP_TIME_SECONDS
