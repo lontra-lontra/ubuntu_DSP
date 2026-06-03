@@ -14,23 +14,25 @@ Run:
 Optional:
   ./Portable/build/portable_superpose_signals_and_responses --max-repetitions 10
 
-This app keeps its own local device/channel/sample-format defaults and forces:
+This app uses the same device/channel/sample-format defaults as
+infer_topology_and_save_it and forces:
   SAMPLE_RATE = 44100
-  FRAMES_PER_BUFFER = 512
+  FRAMES_PER_BUFFER = 128
 
 Behavior:
-  - forever repeat one 0.1 s interaction
-  - each interaction plays 10 times:
-      0.005 s of silence
-      then 0.005 s of a 10 kHz sine on output channel 5 only
+  - forever repeat one interaction
+  - each interaction plays 5 times:
+      0.05 s of silence
+      then 0.005 s of a 10 kHz sine on output channel 2 only
   - records input channel 19 only during that 0.1 s window
   - internally primes the stream with a short silence before each interaction
   - waits 0.3 s between interactions
   - saves CSV data every 100 interactions and once more on exit
   - never auto-plots; it prints the 3 manual plot commands after each save
   - adds the normalized response to a consolidated overlay plot
-  - detects the first response sample where abs(input) >= max(abs(input)) / 2
-  - consolidates a running delay distribution plot, like delay_courbe_detector
+  - detects the first response sample after the first output burst
+  - compares raw delay against the PortAudio-timestamp-corrected delay
+  - consolidates a running delay comparison plot
 */
 
 #include <algorithm>
@@ -64,7 +66,7 @@ Behavior:
 #endif
 
 #ifndef FRAMES_PER_BUFFER
-#define FRAMES_PER_BUFFER 512
+#define FRAMES_PER_BUFFER 128
 #endif
 
 #ifndef DEVICE_NAME
@@ -195,6 +197,8 @@ struct InteractionCapture
     double first_tone_output_dac_time = std::numeric_limits<double>::quiet_NaN();
     double timestamp_corrected_delay_samples = std::numeric_limits<double>::quiet_NaN();
     double timestamp_corrected_delay_ms = std::numeric_limits<double>::quiet_NaN();
+    double delay_correction_delta_samples = std::numeric_limits<double>::quiet_NaN();
+    double delay_correction_delta_ms = std::numeric_limits<double>::quiet_NaN();
     int input_underflow_count = 0;
     int input_overflow_count = 0;
     int output_underflow_count = 0;
@@ -214,6 +218,8 @@ struct InteractionTimingSummary
     double first_tone_output_dac_time = std::numeric_limits<double>::quiet_NaN();
     double timestamp_corrected_delay_samples = std::numeric_limits<double>::quiet_NaN();
     double timestamp_corrected_delay_ms = std::numeric_limits<double>::quiet_NaN();
+    double delay_correction_delta_samples = std::numeric_limits<double>::quiet_NaN();
+    double delay_correction_delta_ms = std::numeric_limits<double>::quiet_NaN();
     int callback_count = 0;
     int priming_callback_count = 0;
     double first_output_minus_input_samples = std::numeric_limits<double>::quiet_NaN();
@@ -227,6 +233,13 @@ struct InteractionTimingSummary
     double stream_input_latency_seconds = std::numeric_limits<double>::quiet_NaN();
     double stream_output_latency_seconds = std::numeric_limits<double>::quiet_NaN();
     double stream_sample_rate = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct RankedResponse
+{
+    double raw_delay_ms = std::numeric_limits<double>::quiet_NaN();
+    double corrected_delay_ms = std::numeric_limits<double>::quiet_NaN();
+    std::vector<float> normalized_response;
 };
 
 struct CallbackRangeStats
@@ -254,6 +267,13 @@ void handle_interrupt_signal(int)
 double seconds_to_samples(double seconds)
 {
     return seconds * static_cast<double>(SAMPLE_RATE);
+}
+
+double sample_offset_to_milliseconds(double sample_count)
+{
+    return 1000.0 *
+           sample_count /
+           static_cast<double>(SAMPLE_RATE);
 }
 
 double quiet_nan()
@@ -550,25 +570,56 @@ double max_absolute_value(const std::vector<float> &signal)
 
 int infer_delay_samples(
     const std::vector<float> &captured_input,
-    double *out_peak = nullptr)
+    int search_start_frame,
+    double *out_peak = nullptr,
+    int *out_detection_frame = nullptr)
 {
+    const int clamped_start = std::max(
+        0,
+        std::min(search_start_frame, static_cast<int>(captured_input.size())));
+
     const double peak = max_absolute_value(captured_input);
     if (out_peak)
     {
-        *out_peak = peak;
+        *out_peak = 0.0;
+    }
+    if (out_detection_frame)
+    {
+        *out_detection_frame = -1;
     }
 
-    if (peak < MINIMUM_INPUT_PEAK)
+    double search_peak = 0.0;
+    for (int index = clamped_start;
+         index < static_cast<int>(captured_input.size());
+         ++index)
+    {
+        search_peak = std::max(
+            search_peak,
+            std::fabs(static_cast<double>(captured_input[static_cast<size_t>(index)])));
+    }
+
+    if (out_peak)
+    {
+        *out_peak = search_peak;
+    }
+
+    if (peak < MINIMUM_INPUT_PEAK || search_peak < MINIMUM_INPUT_PEAK)
     {
         return -1;
     }
 
-    const double threshold = peak * DELAY_THRESHOLD_FRACTION;
-    for (size_t index = 0; index < captured_input.size(); ++index)
+    const double threshold = search_peak * DELAY_THRESHOLD_FRACTION;
+    for (int index = clamped_start;
+         index < static_cast<int>(captured_input.size());
+         ++index)
     {
-        if (std::fabs(static_cast<double>(captured_input[index])) >= threshold)
+        if (std::fabs(static_cast<double>(captured_input[static_cast<size_t>(index)])) >= threshold)
         {
-            return static_cast<int>(index);
+            if (out_detection_frame)
+            {
+                *out_detection_frame = index;
+            }
+            return index - clamped_start;
         }
     }
 
@@ -797,6 +848,8 @@ bool save_timing_summary_csv(
         << ';' << "first_tone_output_dac_time_seconds"
         << ';' << "timestamp_corrected_delay_samples"
         << ';' << "timestamp_corrected_delay_ms"
+        << ';' << "delay_correction_delta_samples"
+        << ';' << "delay_correction_delta_ms"
         << ';' << "callback_count"
         << ';' << "priming_callback_count"
         << ';' << "first_output_minus_input_samples"
@@ -825,6 +878,8 @@ bool save_timing_summary_csv(
             << ';' << row.first_tone_output_dac_time
             << ';' << row.timestamp_corrected_delay_samples
             << ';' << row.timestamp_corrected_delay_ms
+            << ';' << row.delay_correction_delta_samples
+            << ';' << row.delay_correction_delta_ms
             << ';' << row.callback_count
             << ';' << row.priming_callback_count
             << ';' << row.first_output_minus_input_samples
@@ -928,42 +983,138 @@ void print_manual_plot_commands(
 bool save_selected_delays_csv(
     const std::string &csv_path,
     const std::vector<float> &normalized_reference,
-    const std::vector<float> &smallest_delay_response,
-    double smallest_delay_ms,
-    const std::vector<float> &median_delay_response,
-    double median_delay_ms,
-    const std::vector<float> &biggest_delay_response,
-    double biggest_delay_ms)
+    double tone_start_ms,
+    const RankedResponse &smallest_delay_response,
+    const RankedResponse &median_delay_response,
+    const RankedResponse &biggest_delay_response)
 {
-    if (normalized_reference.size() != smallest_delay_response.size() ||
-        normalized_reference.size() != median_delay_response.size() ||
-        normalized_reference.size() != biggest_delay_response.size())
+    if (normalized_reference.size() != smallest_delay_response.normalized_response.size() ||
+        normalized_reference.size() != median_delay_response.normalized_response.size() ||
+        normalized_reference.size() != biggest_delay_response.normalized_response.size())
     {
         return false;
     }
 
     std::vector<float> time_ms(normalized_reference.size(), 0.0f);
+    const float tone_start_marker_value =
+        static_cast<float>(tone_start_ms);
     const float smallest_delay_marker_value =
-        smallest_delay_ms >= 0.0
-            ? static_cast<float>(smallest_delay_ms)
+        is_finite_number(smallest_delay_response.raw_delay_ms)
+            ? static_cast<float>(tone_start_ms + smallest_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float smallest_corrected_delay_marker_value =
+        is_finite_number(smallest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(tone_start_ms + smallest_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float smallest_delay_value =
+        is_finite_number(smallest_delay_response.raw_delay_ms)
+            ? static_cast<float>(smallest_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float smallest_corrected_delay_value =
+        is_finite_number(smallest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(smallest_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float smallest_delay_delta_value =
+        is_finite_number(smallest_delay_response.raw_delay_ms) &&
+                is_finite_number(smallest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(
+                  smallest_delay_response.corrected_delay_ms -
+                  smallest_delay_response.raw_delay_ms)
             : std::numeric_limits<float>::quiet_NaN();
     const float median_delay_marker_value =
-        median_delay_ms >= 0.0
-            ? static_cast<float>(median_delay_ms)
+        is_finite_number(median_delay_response.raw_delay_ms)
+            ? static_cast<float>(tone_start_ms + median_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float median_corrected_delay_marker_value =
+        is_finite_number(median_delay_response.corrected_delay_ms)
+            ? static_cast<float>(tone_start_ms + median_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float median_delay_value =
+        is_finite_number(median_delay_response.raw_delay_ms)
+            ? static_cast<float>(median_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float median_corrected_delay_value =
+        is_finite_number(median_delay_response.corrected_delay_ms)
+            ? static_cast<float>(median_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float median_delay_delta_value =
+        is_finite_number(median_delay_response.raw_delay_ms) &&
+                is_finite_number(median_delay_response.corrected_delay_ms)
+            ? static_cast<float>(
+                  median_delay_response.corrected_delay_ms -
+                  median_delay_response.raw_delay_ms)
             : std::numeric_limits<float>::quiet_NaN();
     const float biggest_delay_marker_value =
-        biggest_delay_ms >= 0.0
-            ? static_cast<float>(biggest_delay_ms)
+        is_finite_number(biggest_delay_response.raw_delay_ms)
+            ? static_cast<float>(tone_start_ms + biggest_delay_response.raw_delay_ms)
             : std::numeric_limits<float>::quiet_NaN();
+    const float biggest_corrected_delay_marker_value =
+        is_finite_number(biggest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(tone_start_ms + biggest_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float biggest_delay_value =
+        is_finite_number(biggest_delay_response.raw_delay_ms)
+            ? static_cast<float>(biggest_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float biggest_corrected_delay_value =
+        is_finite_number(biggest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(biggest_delay_response.corrected_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    const float biggest_delay_delta_value =
+        is_finite_number(biggest_delay_response.raw_delay_ms) &&
+                is_finite_number(biggest_delay_response.corrected_delay_ms)
+            ? static_cast<float>(
+                  biggest_delay_response.corrected_delay_ms -
+                  biggest_delay_response.raw_delay_ms)
+            : std::numeric_limits<float>::quiet_NaN();
+    std::vector<float> tone_start_ms_marker(
+        normalized_reference.size(),
+        tone_start_marker_value);
     std::vector<float> smallest_delay_ms_marker(
         normalized_reference.size(),
         smallest_delay_marker_value);
+    std::vector<float> smallest_corrected_delay_ms_marker(
+        normalized_reference.size(),
+        smallest_corrected_delay_marker_value);
+    std::vector<float> smallest_delay_ms_value_column(
+        normalized_reference.size(),
+        smallest_delay_value);
+    std::vector<float> smallest_corrected_delay_ms_value_column(
+        normalized_reference.size(),
+        smallest_corrected_delay_value);
+    std::vector<float> smallest_delay_delta_ms_value_column(
+        normalized_reference.size(),
+        smallest_delay_delta_value);
     std::vector<float> median_delay_ms_marker(
         normalized_reference.size(),
         median_delay_marker_value);
+    std::vector<float> median_corrected_delay_ms_marker(
+        normalized_reference.size(),
+        median_corrected_delay_marker_value);
+    std::vector<float> median_delay_ms_value_column(
+        normalized_reference.size(),
+        median_delay_value);
+    std::vector<float> median_corrected_delay_ms_value_column(
+        normalized_reference.size(),
+        median_corrected_delay_value);
+    std::vector<float> median_delay_delta_ms_value_column(
+        normalized_reference.size(),
+        median_delay_delta_value);
     std::vector<float> biggest_delay_ms_marker(
         normalized_reference.size(),
         biggest_delay_marker_value);
+    std::vector<float> biggest_corrected_delay_ms_marker(
+        normalized_reference.size(),
+        biggest_corrected_delay_marker_value);
+    std::vector<float> biggest_delay_ms_value_column(
+        normalized_reference.size(),
+        biggest_delay_value);
+    std::vector<float> biggest_corrected_delay_ms_value_column(
+        normalized_reference.size(),
+        biggest_corrected_delay_value);
+    std::vector<float> biggest_delay_delta_ms_value_column(
+        normalized_reference.size(),
+        biggest_delay_delta_value);
     for (size_t i = 0; i < normalized_reference.size(); ++i)
     {
         time_ms[i] = static_cast<float>(
@@ -975,29 +1126,59 @@ bool save_selected_delays_csv(
         {
             "time_ms",
             "normalized_reference",
+            "tone_start_ms_marker",
             "normalized_response_smallest_delay",
-            "delay_ms_marker_smallest",
+            "raw_delay_ms_marker_smallest",
+            "timestamp_corrected_delay_ms_marker_smallest",
+            "raw_delay_ms_value_smallest",
+            "timestamp_corrected_delay_ms_value_smallest",
+            "delay_correction_delta_ms_smallest",
             "normalized_response_median_delay",
-            "delay_ms_marker_median",
+            "raw_delay_ms_marker_median",
+            "timestamp_corrected_delay_ms_marker_median",
+            "raw_delay_ms_value_median",
+            "timestamp_corrected_delay_ms_value_median",
+            "delay_correction_delta_ms_median",
             "normalized_response_biggest_delay",
-            "delay_ms_marker_biggest"},
+            "raw_delay_ms_marker_biggest",
+            "timestamp_corrected_delay_ms_marker_biggest",
+            "raw_delay_ms_value_biggest",
+            "timestamp_corrected_delay_ms_value_biggest",
+            "delay_correction_delta_ms_biggest"},
         {
             &time_ms,
             &normalized_reference,
-            &smallest_delay_response,
+            &tone_start_ms_marker,
+            &smallest_delay_response.normalized_response,
             &smallest_delay_ms_marker,
-            &median_delay_response,
+            &smallest_corrected_delay_ms_marker,
+            &smallest_delay_ms_value_column,
+            &smallest_corrected_delay_ms_value_column,
+            &smallest_delay_delta_ms_value_column,
+            &median_delay_response.normalized_response,
             &median_delay_ms_marker,
-            &biggest_delay_response,
-            &biggest_delay_ms_marker});
+            &median_corrected_delay_ms_marker,
+            &median_delay_ms_value_column,
+            &median_corrected_delay_ms_value_column,
+            &median_delay_delta_ms_value_column,
+            &biggest_delay_response.normalized_response,
+            &biggest_delay_ms_marker,
+            &biggest_corrected_delay_ms_marker,
+            &biggest_delay_ms_value_column,
+            &biggest_corrected_delay_ms_value_column,
+            &biggest_delay_delta_ms_value_column});
 }
 
 bool save_consolidated_csv(
     const std::string &csv_path,
     const std::vector<float> &normalized_reference,
+    double tone_start_ms,
     const std::vector<std::vector<float>> &normalized_responses)
 {
     std::vector<float> time_ms(normalized_reference.size(), 0.0f);
+    std::vector<float> tone_start_ms_marker(
+        normalized_reference.size(),
+        static_cast<float>(tone_start_ms));
     for (size_t i = 0; i < normalized_reference.size(); ++i)
     {
         time_ms[i] = static_cast<float>(
@@ -1006,10 +1187,12 @@ bool save_consolidated_csv(
 
     std::vector<std::string> headers = {
         "time_ms",
-        "normalized_reference"};
+        "normalized_reference",
+        "tone_start_ms_marker"};
     std::vector<const std::vector<float> *> columns = {
         &time_ms,
-        &normalized_reference};
+        &normalized_reference,
+        &tone_start_ms_marker};
 
     for (size_t i = 0; i < normalized_responses.size(); ++i)
     {
@@ -1022,18 +1205,36 @@ bool save_consolidated_csv(
 
 bool save_delay_distribution_csv(
     const std::string &csv_path,
-    const std::vector<float> &delays_ms)
+    const std::vector<InteractionTimingSummary> &timing_summaries)
 {
-    std::vector<float> repetitions(delays_ms.size(), 0.0f);
-    for (size_t i = 0; i < delays_ms.size(); ++i)
+    if (!ensure_parent_directory(csv_path))
     {
-        repetitions[i] = static_cast<float>(i + 1);
+        return false;
     }
 
-    return save_arrays_to_csv(
-        csv_path,
-        {"repetition", "delay_ms"},
-        {&repetitions, &delays_ms});
+    std::ofstream out(csv_path);
+    if (!out.is_open())
+    {
+        return false;
+    }
+
+    out << std::setprecision(17);
+    out << "repetition"
+        << ';' << "raw_delay_ms"
+        << ';' << "timestamp_corrected_delay_ms"
+        << ';' << "delay_correction_delta_ms"
+        << '\n';
+
+    for (const InteractionTimingSummary &summary : timing_summaries)
+    {
+        out << summary.repetition
+            << ';' << summary.raw_delay_ms
+            << ';' << summary.timestamp_corrected_delay_ms
+            << ';' << summary.delay_correction_delta_ms
+            << '\n';
+    }
+
+    return true;
 }
 
 bool capture_single_interaction(
@@ -1243,14 +1444,14 @@ int main(int argc, char **argv)
     input_parameters.device = device_index;
     input_parameters.channelCount = CHANNELS;
     input_parameters.sampleFormat = SAMPLE_FORMAT;
-    input_parameters.suggestedLatency = device_info->defaultHighInputLatency;
+    input_parameters.suggestedLatency = device_info->defaultLowInputLatency;
     input_parameters.hostApiSpecificStreamInfo = nullptr;
 
     PaStreamParameters output_parameters{};
     output_parameters.device = device_index;
     output_parameters.channelCount = CHANNELS;
     output_parameters.sampleFormat = SAMPLE_FORMAT;
-    output_parameters.suggestedLatency = device_info->defaultHighOutputLatency;
+    output_parameters.suggestedLatency = device_info->defaultLowOutputLatency;
     output_parameters.hostApiSpecificStreamInfo = nullptr;
 
     const PaError format_error =
@@ -1335,11 +1536,22 @@ int main(int argc, char **argv)
             interaction_capture.full_reference_output,
             pre_roll_frames,
             interaction_frames));
+    const int tone_start_frame_in_interaction =
+        first_tone_start_frame_in_interaction();
+    if (tone_start_frame_in_interaction < 0 ||
+        tone_start_frame_in_interaction >= interaction_frames)
+    {
+        std::cerr << "The first tone start must be inside the interaction window.\n";
+        Pa_CloseStream(stream);
+        Pa_Terminate();
+        return 1;
+    }
+    const double tone_start_ms =
+        samples_to_milliseconds(tone_start_frame_in_interaction);
     const int first_tone_output_frame_absolute =
-        pre_roll_frames + first_tone_start_frame_in_interaction();
+        pre_roll_frames + tone_start_frame_in_interaction;
     std::vector<std::vector<float>> consolidated_responses;
-    std::vector<std::pair<double, std::vector<float>>> delay_ranked_responses;
-    std::vector<float> delays_ms;
+    std::vector<RankedResponse> delay_ranked_responses;
     std::vector<InteractionTimingSummary> timing_summaries;
     bool selected_delays_dirty = false;
     bool consolidated_dirty = false;
@@ -1361,12 +1573,10 @@ int main(int argc, char **argv)
             if (save_selected_delays_csv(
                     selected_delays_csv,
                     normalized_reference,
-                    smallest.second,
-                    smallest.first,
-                    median.second,
-                    median.first,
-                    biggest.second,
-                    biggest.first))
+                    tone_start_ms,
+                    smallest,
+                    median,
+                    biggest))
             {
                 selected_delays_dirty = false;
                 saved_any_csv = true;
@@ -1377,6 +1587,7 @@ int main(int argc, char **argv)
             save_consolidated_csv(
                 consolidated_csv,
                 normalized_reference,
+                tone_start_ms,
                 consolidated_responses))
         {
             consolidated_dirty = false;
@@ -1384,8 +1595,8 @@ int main(int argc, char **argv)
         }
 
         if (distribution_dirty &&
-            !delays_ms.empty() &&
-            save_delay_distribution_csv(delay_distribution_csv, delays_ms))
+            !timing_summaries.empty() &&
+            save_delay_distribution_csv(delay_distribution_csv, timing_summaries))
         {
             distribution_dirty = false;
             saved_any_csv = true;
@@ -1438,9 +1649,12 @@ int main(int argc, char **argv)
             interaction_frames);
         const std::vector<float> normalized_response =
             normalize_signal(interaction_response);
+        int detected_input_frame_in_interaction = -1;
         interaction_capture.delay_samples = infer_delay_samples(
             interaction_response,
-            &interaction_capture.input_peak);
+            tone_start_frame_in_interaction,
+            &interaction_capture.input_peak,
+            &detected_input_frame_in_interaction);
         interaction_capture.delay_ms =
             interaction_capture.delay_samples >= 0
                 ? samples_to_milliseconds(interaction_capture.delay_samples)
@@ -1472,8 +1686,8 @@ int main(int argc, char **argv)
                 : quiet_nan();
 
         interaction_capture.detected_input_frame_absolute =
-            interaction_capture.delay_samples >= 0
-                ? pre_roll_frames + interaction_capture.delay_samples
+            detected_input_frame_in_interaction >= 0
+                ? pre_roll_frames + detected_input_frame_in_interaction
                 : -1;
         interaction_capture.detected_input_adc_time =
             interaction_capture.detected_input_frame_absolute >= 0 &&
@@ -1485,6 +1699,8 @@ int main(int argc, char **argv)
 
         interaction_capture.timestamp_corrected_delay_samples = quiet_nan();
         interaction_capture.timestamp_corrected_delay_ms = quiet_nan();
+        interaction_capture.delay_correction_delta_samples = quiet_nan();
+        interaction_capture.delay_correction_delta_ms = quiet_nan();
         if (is_finite_number(interaction_capture.detected_input_adc_time) &&
             is_finite_number(interaction_capture.first_tone_output_dac_time))
         {
@@ -1495,6 +1711,16 @@ int main(int argc, char **argv)
                 seconds_to_samples(corrected_delay_seconds);
             interaction_capture.timestamp_corrected_delay_ms =
                 1000.0 * corrected_delay_seconds;
+        }
+        if (interaction_capture.delay_samples >= 0 &&
+            is_finite_number(interaction_capture.timestamp_corrected_delay_samples))
+        {
+            interaction_capture.delay_correction_delta_samples =
+                interaction_capture.timestamp_corrected_delay_samples -
+                static_cast<double>(interaction_capture.delay_samples);
+            interaction_capture.delay_correction_delta_ms =
+                interaction_capture.timestamp_corrected_delay_ms -
+                interaction_capture.delay_ms;
         }
 
         const CallbackRangeStats callback_stats =
@@ -1521,6 +1747,10 @@ int main(int argc, char **argv)
             interaction_capture.timestamp_corrected_delay_samples;
         timing_summary.timestamp_corrected_delay_ms =
             interaction_capture.timestamp_corrected_delay_ms;
+        timing_summary.delay_correction_delta_samples =
+            interaction_capture.delay_correction_delta_samples;
+        timing_summary.delay_correction_delta_ms =
+            interaction_capture.delay_correction_delta_ms;
         timing_summary.callback_count = callback_stats.callback_count;
         timing_summary.priming_callback_count =
             callback_stats.priming_callback_count;
@@ -1562,6 +1792,8 @@ int main(int argc, char **argv)
                   << interaction_capture.timestamp_corrected_delay_samples
                   << " corrected_delay_ms="
                   << interaction_capture.timestamp_corrected_delay_ms
+                  << " delay_correction_delta_ms="
+                  << interaction_capture.delay_correction_delta_ms
                   << " cb_out_minus_in_first_samples="
                   << callback_stats.first_output_minus_input_samples
                   << " cb_out_minus_in_avg_samples="
@@ -1580,17 +1812,19 @@ int main(int argc, char **argv)
         }
         else
         {
-            delay_ranked_responses.emplace_back(
-                interaction_capture.delay_ms,
-                normalized_response);
+            RankedResponse ranked_response;
+            ranked_response.raw_delay_ms = interaction_capture.delay_ms;
+            ranked_response.corrected_delay_ms =
+                interaction_capture.timestamp_corrected_delay_ms;
+            ranked_response.normalized_response = normalized_response;
+            delay_ranked_responses.push_back(std::move(ranked_response));
             std::sort(
                 delay_ranked_responses.begin(),
                 delay_ranked_responses.end(),
                 [](const auto &lhs, const auto &rhs) {
-                    return lhs.first < rhs.first;
+                    return lhs.raw_delay_ms < rhs.raw_delay_ms;
                 });
             selected_delays_dirty = true;
-            delays_ms.push_back(static_cast<float>(interaction_capture.delay_ms));
             distribution_dirty = true;
         }
 

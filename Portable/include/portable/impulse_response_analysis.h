@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <iostream>
 #include <vector>
@@ -161,4 +162,40 @@ inline std::vector<float> frequency_response_half_to_time_domain(
     fftwf_free(impulse_out);
 
     return impulse_response;
+}
+
+inline std::vector<std::complex<float>> advance_frequency_response_half(
+    const std::vector<std::complex<float>> &transfer_half_values,
+    int signal_length,
+    double sample_advance)
+{
+    const int fft_bins = static_cast<int>(transfer_half_values.size());
+    if (fft_bins <= 0 ||
+        signal_length <= 0 ||
+        fft_bins != (signal_length / 2 + 1) ||
+        !std::isfinite(sample_advance))
+    {
+        return transfer_half_values;
+    }
+
+    constexpr double kTwoPi = 6.28318530717958647692;
+    std::vector<std::complex<float>> advanced(
+        static_cast<size_t>(fft_bins),
+        std::complex<float>(0.0f, 0.0f));
+
+    for (int k = 0; k < fft_bins; ++k)
+    {
+        const double phase =
+            kTwoPi *
+            sample_advance *
+            static_cast<double>(k) /
+            static_cast<double>(signal_length);
+        const std::complex<float> rotator(
+            static_cast<float>(std::cos(phase)),
+            static_cast<float>(std::sin(phase)));
+        advanced[static_cast<size_t>(k)] =
+            transfer_half_values[static_cast<size_t>(k)] * rotator;
+    }
+
+    return advanced;
 }

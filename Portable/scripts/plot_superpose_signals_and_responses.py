@@ -12,6 +12,8 @@ except ImportError:
 
 
 RESPONSE_COLOR = "#0f766e"
+REFERENCE_COLOR = "#111827"
+TONE_START_COLOR = "#111827"
 SMALLEST_COLOR = "#2563eb"
 MEDIAN_COLOR = "#ca8a04"
 BIGGEST_COLOR = "#dc2626"
@@ -191,10 +193,27 @@ def sorted_response_fields(fieldnames: list[str]) -> list[str]:
 
 def plot_single_response(csv_path: Path, rows: list[dict[str, float]]):
     time_ms = [row["time_ms"] for row in rows]
+    reference = [row["normalized_reference"] for row in rows]
     response = [row["normalized_response"] for row in rows]
+    tone_start_ms = rows[0].get("tone_start_ms_marker", float("nan")) if rows else float("nan")
+    raw_delay_marker = rows[0].get("raw_delay_ms_marker", float("nan")) if rows else float("nan")
+    corrected_delay_marker = (
+        rows[0].get("timestamp_corrected_delay_ms_marker", float("nan"))
+        if rows
+        else float("nan")
+    )
     delay_ms = rows[0].get("delay_ms_marker", float("nan")) if rows else float("nan")
 
     figure, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(
+        time_ms,
+        reference,
+        linewidth=1.3,
+        linestyle=":",
+        color=REFERENCE_COLOR,
+        alpha=0.85,
+        label="normalized_reference",
+    )
     ax.plot(
         time_ms,
         response,
@@ -202,6 +221,31 @@ def plot_single_response(csv_path: Path, rows: list[dict[str, float]]):
         label="normalized_response",
         color=RESPONSE_COLOR,
     )
+    if not math.isnan(tone_start_ms):
+        ax.axvline(
+            tone_start_ms,
+            color=TONE_START_COLOR,
+            linestyle="-.",
+            linewidth=1.2,
+            alpha=0.9,
+            label=f"tone start = {tone_start_ms:.3f} ms",
+        )
+    if not math.isnan(raw_delay_marker):
+        ax.axvline(
+            raw_delay_marker,
+            color=RESPONSE_COLOR,
+            linestyle="--",
+            linewidth=1.5,
+            label=f"raw detection = {raw_delay_marker:.3f} ms",
+        )
+    if not math.isnan(corrected_delay_marker):
+        ax.axvline(
+            corrected_delay_marker,
+            color="#7c3aed",
+            linestyle=":",
+            linewidth=1.7,
+            label=f"corrected delay marker = {corrected_delay_marker:.3f} ms",
+        )
     if not math.isnan(delay_ms) and delay_ms >= 0.0:
         ax.axvline(
             delay_ms,
@@ -221,28 +265,118 @@ def plot_single_response(csv_path: Path, rows: list[dict[str, float]]):
 
 def plot_selected_delays(csv_path: Path, rows: list[dict[str, float]]):
     time_ms = [row["time_ms"] for row in rows]
+    normalized_reference = values_for_field(rows, "normalized_reference")
     smallest = values_for_field(rows, "normalized_response_smallest_delay")
     median = values_for_field(rows, "normalized_response_median_delay")
     biggest = values_for_field(rows, "normalized_response_biggest_delay")
 
+    tone_start_ms = (
+        rows[0].get("tone_start_ms_marker", float("nan")) if rows else float("nan")
+    )
     smallest_delay_ms = (
-        rows[0].get("delay_ms_marker_smallest", float("nan")) if rows else float("nan")
+        rows[0].get("raw_delay_ms_value_smallest", rows[0].get("delay_ms_marker_smallest", float("nan")))
+        if rows
+        else float("nan")
+    )
+    smallest_raw_marker_ms = (
+        rows[0].get("raw_delay_ms_marker_smallest", rows[0].get("delay_ms_marker_smallest", float("nan")))
+        if rows
+        else float("nan")
+    )
+    smallest_corrected_delay_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_value_smallest", float("nan"))
+        if rows
+        else float("nan")
+    )
+    smallest_corrected_marker_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_marker_smallest", float("nan"))
+        if rows
+        else float("nan")
+    )
+    smallest_delay_delta_ms = (
+        rows[0].get("delay_correction_delta_ms_smallest", float("nan"))
+        if rows
+        else float("nan")
     )
     median_delay_ms = (
-        rows[0].get("delay_ms_marker_median", float("nan")) if rows else float("nan")
+        rows[0].get("raw_delay_ms_value_median", rows[0].get("delay_ms_marker_median", float("nan")))
+        if rows
+        else float("nan")
+    )
+    median_raw_marker_ms = (
+        rows[0].get("raw_delay_ms_marker_median", rows[0].get("delay_ms_marker_median", float("nan")))
+        if rows
+        else float("nan")
+    )
+    median_corrected_delay_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_value_median", float("nan"))
+        if rows
+        else float("nan")
+    )
+    median_corrected_marker_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_marker_median", float("nan"))
+        if rows
+        else float("nan")
+    )
+    median_delay_delta_ms = (
+        rows[0].get("delay_correction_delta_ms_median", float("nan"))
+        if rows
+        else float("nan")
     )
     biggest_delay_ms = (
-        rows[0].get("delay_ms_marker_biggest", float("nan")) if rows else float("nan")
+        rows[0].get("raw_delay_ms_value_biggest", rows[0].get("delay_ms_marker_biggest", float("nan")))
+        if rows
+        else float("nan")
+    )
+    biggest_raw_marker_ms = (
+        rows[0].get("raw_delay_ms_marker_biggest", rows[0].get("delay_ms_marker_biggest", float("nan")))
+        if rows
+        else float("nan")
+    )
+    biggest_corrected_delay_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_value_biggest", float("nan"))
+        if rows
+        else float("nan")
+    )
+    biggest_corrected_marker_ms = (
+        rows[0].get("timestamp_corrected_delay_ms_marker_biggest", float("nan"))
+        if rows
+        else float("nan")
+    )
+    biggest_delay_delta_ms = (
+        rows[0].get("delay_correction_delta_ms_biggest", float("nan"))
+        if rows
+        else float("nan")
     )
 
     figure, ax = plt.subplots(figsize=(11, 6))
+    reference_line = ax.plot(
+        time_ms,
+        normalized_reference,
+        linewidth=1.2,
+        linestyle=":",
+        color=REFERENCE_COLOR,
+        alpha=0.8,
+        label="normalized_reference",
+    )[0]
+    tone_start_marker = None
+    if not math.isnan(tone_start_ms):
+        tone_start_marker = ax.axvline(
+            tone_start_ms,
+            color=TONE_START_COLOR,
+            linestyle="-.",
+            linewidth=1.2,
+            alpha=0.9,
+        )
     smallest_line = ax.plot(
         time_ms,
         smallest,
         linewidth=1.8,
         color=SMALLEST_COLOR,
         label=(
-            f"smallest delay ({smallest_delay_ms:.3f} ms)"
+            f"smallest raw={smallest_delay_ms:.3f} ms corrected={smallest_corrected_delay_ms:.3f} ms"
+            if not math.isnan(smallest_delay_ms) and not math.isnan(smallest_corrected_delay_ms)
+            else f"smallest raw={smallest_delay_ms:.3f} ms"
             if not math.isnan(smallest_delay_ms)
             else "smallest delay"
         ),
@@ -253,7 +387,9 @@ def plot_selected_delays(csv_path: Path, rows: list[dict[str, float]]):
         linewidth=1.8,
         color=MEDIAN_COLOR,
         label=(
-            f"median delay ({median_delay_ms:.3f} ms)"
+            f"median raw={median_delay_ms:.3f} ms corrected={median_corrected_delay_ms:.3f} ms"
+            if not math.isnan(median_delay_ms) and not math.isnan(median_corrected_delay_ms)
+            else f"median raw={median_delay_ms:.3f} ms"
             if not math.isnan(median_delay_ms)
             else "median delay"
         ),
@@ -264,38 +400,67 @@ def plot_selected_delays(csv_path: Path, rows: list[dict[str, float]]):
         linewidth=1.8,
         color=BIGGEST_COLOR,
         label=(
-            f"biggest delay ({biggest_delay_ms:.3f} ms)"
+            f"biggest raw={biggest_delay_ms:.3f} ms corrected={biggest_corrected_delay_ms:.3f} ms"
+            if not math.isnan(biggest_delay_ms) and not math.isnan(biggest_corrected_delay_ms)
+            else f"biggest raw={biggest_delay_ms:.3f} ms"
             if not math.isnan(biggest_delay_ms)
             else "biggest delay"
         ),
     )[0]
 
-    smallest_marker = None
-    if not math.isnan(smallest_delay_ms) and smallest_delay_ms >= 0.0:
-        smallest_marker = ax.axvline(
-            smallest_delay_ms,
+    smallest_raw_marker = None
+    if not math.isnan(smallest_raw_marker_ms) and smallest_raw_marker_ms >= 0.0:
+        smallest_raw_marker = ax.axvline(
+            smallest_raw_marker_ms,
             color=SMALLEST_COLOR,
             linestyle="--",
             linewidth=1.2,
             alpha=0.9,
         )
-    median_marker = None
-    if not math.isnan(median_delay_ms) and median_delay_ms >= 0.0:
-        median_marker = ax.axvline(
-            median_delay_ms,
+    smallest_corrected_marker = None
+    if not math.isnan(smallest_corrected_marker_ms) and smallest_corrected_marker_ms >= 0.0:
+        smallest_corrected_marker = ax.axvline(
+            smallest_corrected_marker_ms,
+            color=SMALLEST_COLOR,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.95,
+        )
+    median_raw_marker = None
+    if not math.isnan(median_raw_marker_ms) and median_raw_marker_ms >= 0.0:
+        median_raw_marker = ax.axvline(
+            median_raw_marker_ms,
             color=MEDIAN_COLOR,
             linestyle="--",
             linewidth=1.2,
             alpha=0.9,
         )
-    biggest_marker = None
-    if not math.isnan(biggest_delay_ms) and biggest_delay_ms >= 0.0:
-        biggest_marker = ax.axvline(
-            biggest_delay_ms,
+    median_corrected_marker = None
+    if not math.isnan(median_corrected_marker_ms) and median_corrected_marker_ms >= 0.0:
+        median_corrected_marker = ax.axvline(
+            median_corrected_marker_ms,
+            color=MEDIAN_COLOR,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.95,
+        )
+    biggest_raw_marker = None
+    if not math.isnan(biggest_raw_marker_ms) and biggest_raw_marker_ms >= 0.0:
+        biggest_raw_marker = ax.axvline(
+            biggest_raw_marker_ms,
             color=BIGGEST_COLOR,
             linestyle="--",
             linewidth=1.2,
             alpha=0.9,
+        )
+    biggest_corrected_marker = None
+    if not math.isnan(biggest_corrected_marker_ms) and biggest_corrected_marker_ms >= 0.0:
+        biggest_corrected_marker = ax.axvline(
+            biggest_corrected_marker_ms,
+            color=BIGGEST_COLOR,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.95,
         )
 
     ax.set_xlabel("time (ms)")
@@ -307,30 +472,58 @@ def plot_selected_delays(csv_path: Path, rows: list[dict[str, float]]):
         [
             {
                 "label": (
-                    f"smallest delay ({smallest_delay_ms:.3f} ms)"
+                    f"reference / tone start ({tone_start_ms:.3f} ms)"
+                    if not math.isnan(tone_start_ms)
+                    else "reference"
+                ),
+                "color": REFERENCE_COLOR,
+                "linestyle": ":",
+                "lines": [reference_line, tone_start_marker] if tone_start_marker else [reference_line],
+            },
+            {
+                "label": (
+                    f"smallest raw={smallest_delay_ms:.3f} ms corrected={smallest_corrected_delay_ms:.3f} ms delta={smallest_delay_delta_ms:.3f} ms"
+                    if not math.isnan(smallest_delay_ms) and not math.isnan(smallest_corrected_delay_ms)
+                    else f"smallest raw={smallest_delay_ms:.3f} ms"
                     if not math.isnan(smallest_delay_ms)
                     else "smallest delay"
                 ),
                 "color": SMALLEST_COLOR,
-                "lines": [smallest_line, smallest_marker] if smallest_marker else [smallest_line],
+                "lines": [
+                    line
+                    for line in [smallest_line, smallest_raw_marker, smallest_corrected_marker]
+                    if line is not None
+                ],
             },
             {
                 "label": (
-                    f"median delay ({median_delay_ms:.3f} ms)"
+                    f"median raw={median_delay_ms:.3f} ms corrected={median_corrected_delay_ms:.3f} ms delta={median_delay_delta_ms:.3f} ms"
+                    if not math.isnan(median_delay_ms) and not math.isnan(median_corrected_delay_ms)
+                    else f"median raw={median_delay_ms:.3f} ms"
                     if not math.isnan(median_delay_ms)
                     else "median delay"
                 ),
                 "color": MEDIAN_COLOR,
-                "lines": [median_line, median_marker] if median_marker else [median_line],
+                "lines": [
+                    line
+                    for line in [median_line, median_raw_marker, median_corrected_marker]
+                    if line is not None
+                ],
             },
             {
                 "label": (
-                    f"biggest delay ({biggest_delay_ms:.3f} ms)"
+                    f"biggest raw={biggest_delay_ms:.3f} ms corrected={biggest_corrected_delay_ms:.3f} ms delta={biggest_delay_delta_ms:.3f} ms"
+                    if not math.isnan(biggest_delay_ms) and not math.isnan(biggest_corrected_delay_ms)
+                    else f"biggest raw={biggest_delay_ms:.3f} ms"
                     if not math.isnan(biggest_delay_ms)
                     else "biggest delay"
                 ),
                 "color": BIGGEST_COLOR,
-                "lines": [biggest_line, biggest_marker] if biggest_marker else [biggest_line],
+                "lines": [
+                    line
+                    for line in [biggest_line, biggest_raw_marker, biggest_corrected_marker]
+                    if line is not None
+                ],
             },
         ],
     )
@@ -346,6 +539,7 @@ def plot_consolidated(
     time_ms = [row["time_ms"] for row in rows]
     response_fields = sorted_response_fields(fieldnames)
     response_series = [values_for_field(rows, field) for field in response_fields]
+    tone_start_ms = rows[0].get("tone_start_ms_marker", float("nan")) if rows else float("nan")
 
     smallest_index = None
     biggest_index = None
@@ -374,6 +568,23 @@ def plot_consolidated(
                 biggest_index = indexed_delays[-1][1]
 
     figure, ax = plt.subplots(figsize=(11, 6))
+    reference_line = ax.plot(
+        time_ms,
+        values_for_field(rows, "normalized_reference"),
+        linewidth=1.2,
+        linestyle=":",
+        color=REFERENCE_COLOR,
+        alpha=0.8,
+    )[0]
+    tone_start_marker = None
+    if not math.isnan(tone_start_ms):
+        tone_start_marker = ax.axvline(
+            tone_start_ms,
+            color=TONE_START_COLOR,
+            linestyle="-.",
+            linewidth=1.2,
+            alpha=0.9,
+        )
     smallest_lines = []
     biggest_lines = []
     rest_lines = []
@@ -412,6 +623,16 @@ def plot_consolidated(
     attach_toggle_legend(
         ax,
         [
+            {
+                "label": (
+                    f"reference / tone start ({tone_start_ms:.3f} ms)"
+                    if not math.isnan(tone_start_ms)
+                    else "reference"
+                ),
+                "color": REFERENCE_COLOR,
+                "linestyle": ":",
+                "lines": [reference_line, tone_start_marker] if tone_start_marker else [reference_line],
+            },
             {"label": "biggest", "color": BIGGEST_COLOR, "lines": biggest_lines},
             {"label": "smallest", "color": SMALLEST_COLOR, "lines": smallest_lines},
             {"label": "rest", "color": REST_COLOR, "lines": rest_lines},
@@ -438,12 +659,10 @@ def main() -> int:
     field_set = set(fieldnames)
     if {
         "time_ms",
+        "normalized_reference",
         "normalized_response_smallest_delay",
-        "delay_ms_marker_smallest",
         "normalized_response_median_delay",
-        "delay_ms_marker_median",
         "normalized_response_biggest_delay",
-        "delay_ms_marker_biggest",
     }.issubset(field_set):
         figure = plot_selected_delays(csv_path, rows)
     elif {"time_ms", "normalized_reference", "normalized_response"}.issubset(field_set):

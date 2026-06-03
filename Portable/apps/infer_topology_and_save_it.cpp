@@ -22,6 +22,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #include <cmath>
 #include <complex>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -90,6 +91,13 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #include "portable/impulse_response_analysis.h"
 #include "portable/usefull_singnals.h"
 
+struct SweepTimingRow
+{
+    int frames_to_process = 0;
+    double input_buffer_adc_time = std::numeric_limits<double>::quiet_NaN();
+    double output_buffer_dac_time = std::numeric_limits<double>::quiet_NaN();
+};
+
 struct SweepCaptureData
 {
     float *recorded = nullptr;
@@ -97,7 +105,50 @@ struct SweepCaptureData
     int frame_index = 0;
     int max_frames = 0;
     int active_output_channel = 0;
+    std::vector<SweepTimingRow> *timing_rows = nullptr;
 };
+
+static double quiet_nan()
+{
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+static bool is_finite_number(double value)
+{
+    return std::isfinite(value);
+}
+
+static double average_output_minus_input_samples(
+    const std::vector<SweepTimingRow> &timing_rows)
+{
+    double weighted_sum = 0.0;
+    double total_weight = 0.0;
+
+    for (const SweepTimingRow &row : timing_rows)
+    {
+        if (row.frames_to_process <= 0 ||
+            !is_finite_number(row.input_buffer_adc_time) ||
+            !is_finite_number(row.output_buffer_dac_time))
+        {
+            continue;
+        }
+
+        const double output_minus_input_samples =
+            (row.output_buffer_dac_time - row.input_buffer_adc_time) *
+            static_cast<double>(SAMPLE_RATE);
+        weighted_sum +=
+            output_minus_input_samples *
+            static_cast<double>(row.frames_to_process);
+        total_weight += static_cast<double>(row.frames_to_process);
+    }
+
+    if (total_weight <= 0.0)
+    {
+        return quiet_nan();
+    }
+
+    return weighted_sum / total_weight;
+}
 
 static float chirp_silence_time()
 {
@@ -148,7 +199,7 @@ static int pa_sweep_callback(
     const void *inputBuffer,
     void *outputBuffer,
     unsigned long framesPerBuffer,
-    const PaStreamCallbackTimeInfo *,
+    const PaStreamCallbackTimeInfo *timeInfo,
     PaStreamCallbackFlags,
     void *userData)
 {
@@ -164,6 +215,18 @@ static int pa_sweep_callback(
     const int frames_left = data->max_frames - data->frame_index;
     const int frames_to_process =
         std::max(0, std::min(static_cast<int>(framesPerBuffer), frames_left));
+
+    if (data->timing_rows)
+    {
+        SweepTimingRow row;
+        row.frames_to_process = frames_to_process;
+        if (timeInfo)
+        {
+            row.input_buffer_adc_time = timeInfo->inputBufferAdcTime;
+            row.output_buffer_dac_time = timeInfo->outputBufferDacTime;
+        }
+        data->timing_rows->push_back(row);
+    }
 
     for (int i = 0; i < frames_to_process; ++i)
     {
@@ -472,6 +535,8 @@ int main()
         data.frame_index = 0;
         data.max_frames = sweep_samples;
         data.active_output_channel = output_channel;
+        std::vector<SweepTimingRow> timing_rows;
+        data.timing_rows = &timing_rows;
 
         PaStream *stream = nullptr;
         err = Pa_OpenStream(
@@ -507,6 +572,19 @@ int main()
         Pa_StopStream(stream);
         Pa_CloseStream(stream);
 
+        const double callback_output_minus_input_samples =
+            average_output_minus_input_samples(timing_rows);
+        if (is_finite_number(callback_output_minus_input_samples))
+        {
+            std::cout << "Estimated callback output-input offset for output channel "
+                      << output_channel
+                      << ": " << callback_output_minus_input_samples
+                      << " samples ("
+                      << (1000.0 * callback_output_minus_input_samples /
+                          static_cast<double>(SAMPLE_RATE))
+                      << " ms)\n";
+        }
+
         std::vector<float> played_out(static_cast<size_t>(sweep_samples), 0.0f);
         for (int i = 0; i < sweep_samples; ++i)
         {
@@ -525,12 +603,21 @@ int main()
 
             const std::vector<std::complex<float>> frequency_response =
                 estimate_frequency_response_half(played_out, recorded_in);
+            const std::vector<std::complex<float>> corrected_frequency_response =
+                is_finite_number(callback_output_minus_input_samples)
+                    ? advance_frequency_response_half(
+                          frequency_response,
+                          sweep_samples,
+                          callback_output_minus_input_samples)
+                    : frequency_response;
             topology_frequency[static_cast<size_t>(input_channel)]
                               [static_cast<size_t>(output_channel)] =
-                frequency_response;
+                corrected_frequency_response;
 
             const std::vector<float> impulse_response =
-                frequency_response_half_to_time_domain(frequency_response, sweep_samples);
+                frequency_response_half_to_time_domain(
+                    corrected_frequency_response,
+                    sweep_samples);
 
             const int copy_samples =
                 std::min(impulse_samples, static_cast<int>(impulse_response.size()));
