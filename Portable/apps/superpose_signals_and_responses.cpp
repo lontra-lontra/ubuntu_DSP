@@ -68,7 +68,7 @@ Behavior:
 #endif
 
 #ifndef DEVICE_NAME
-#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
 #endif
 
 #ifndef CHANNELS

@@ -8,7 +8,7 @@ Run:
   ./Portable/build/portable_test_installation
 
 Important config:
-  shared device config in portable/sound_device_query_config.h:
+  local device config in this file:
   #define DEVICE_NAME ...
   #define CHANNELS ...
   #define SAMPLE_RATE ...
@@ -45,9 +45,9 @@ loudest input in that same test.
 
 
 
-// Shared sound-device config used by the sound device query and test apps.
+// Local sound-device config for this app.
 #ifndef DEVICE_NAME
-#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
 #endif
 
 #ifndef CHANNELS

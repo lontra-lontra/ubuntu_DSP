@@ -14,7 +14,7 @@ Run:
 To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 Important config:
-  shared device config in portable/sound_device_query_config.h:
+  local device config in this file:
   #define DEVICE_NAME ...
   #define CHANNELS ...
   #define SAMPLE_RATE ...
@@ -45,7 +45,25 @@ with 1 second of silence between channels, and repeats until you stop it.
 #error "MOCK must be defined by the build system for this target."
 #endif
 
-#include "portable/sound_device_query_config.h"
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
+#endif
+
+#ifndef CHANNELS
+#define CHANNELS 32
+#endif
+
+#ifndef FRAMES_PER_BUFFER
+#define FRAMES_PER_BUFFER 256
+#endif
+
+#ifndef SAMPLE_FORMAT
+#define SAMPLE_FORMAT paFloat32
+#endif
+
+#ifndef SAMPLE_RATE
+#define SAMPLE_RATE 44100
+#endif
 
 #ifndef TONE_SECONDS
 #define TONE_SECONDS 1.0
@@ -179,7 +197,7 @@ void maybe_warn_about_generic_alsa_plugin_device(
         << "'. These virtual PCMs can expose synthetic channel counts and "
         << "often do not behave like the underlying hardware for multichannel "
         << "output tests.\n"
-        << "Prefer a hardware match such as 'MADIface USB', 'hw:2,0', or a "
+        << "Prefer a hardware match such as 'MADIface USB', 'hw:1,0', or a "
         << "PortAudio device name that includes '(hw:...)' or '(plughw:...)'.\n";
 }
 

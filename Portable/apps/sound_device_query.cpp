@@ -14,7 +14,7 @@ Run:
 To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 Important config:
-  shared device config in portable/sound_device_query_config.h:
+  local device config in this file:
   #define DEVICE_NAME ...
   #define CHANNELS ...
   #define SAMPLE_RATE ...
@@ -30,12 +30,12 @@ Linux JACK experiment notes:
   JACK in that CMake file, then rebuild.
 
   If you want a real jackd server bound directly to the MADIface hardware, you
-  usually need PipeWire/WirePlumber to release hw:2,0 first:
+  usually need PipeWire/WirePlumber to release hw:1,0 first:
     systemctl --user stop pipewire pipewire-pulse wireplumber
     killall pipewire wireplumber
 
   Start a JACK server on the MADIface:
-    jackd -d alsa -d hw:2,0 -r 48000 -p 32 -n 20
+    jackd -d alsa -d hw:1,0 -r 48000 -p 32 -n 20
 
   Inspect JACK ports:
     jack_lsp
@@ -73,7 +73,25 @@ Linux JACK experiment notes:
 #error "MOCK must be defined by the build system for this target."
 #endif
 
-#include "portable/sound_device_query_config.h"
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
+#endif
+
+#ifndef CHANNELS
+#define CHANNELS 32
+#endif
+
+#ifndef FRAMES_PER_BUFFER
+#define FRAMES_PER_BUFFER 256
+#endif
+
+#ifndef SAMPLE_FORMAT
+#define SAMPLE_FORMAT paFloat32
+#endif
+
+#ifndef SAMPLE_RATE
+#define SAMPLE_RATE 44100
+#endif
 
 #ifndef PLAY_AND_LISTEN_SECONDS
 #define PLAY_AND_LISTEN_SECONDS 5.0
@@ -340,7 +358,7 @@ void maybe_warn_about_generic_alsa_plugin_device(
         << "'. These virtual PCMs can expose synthetic channel counts and "
         << "often do not behave like the underlying hardware for multichannel "
         << "full-duplex tests.\n"
-        << "Prefer a hardware match such as 'MADIface USB', 'hw:2,0', or a "
+        << "Prefer a hardware match such as 'MADIface USB', 'hw:1,0', or a "
         << "PortAudio device name that includes '(hw:...)' or '(plughw:...)'.\n";
 }
 

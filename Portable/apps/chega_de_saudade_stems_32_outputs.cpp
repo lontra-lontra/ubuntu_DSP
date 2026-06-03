@@ -50,7 +50,25 @@ Any remainder outputs stay silent.
 #error "MOCK must be defined by the build system for this target."
 #endif
 
-#include "portable/sound_device_query_config.h"
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
+#endif
+
+#ifndef CHANNELS
+#define CHANNELS 32
+#endif
+
+#ifndef FRAMES_PER_BUFFER
+#define FRAMES_PER_BUFFER 256
+#endif
+
+#ifndef SAMPLE_FORMAT
+#define SAMPLE_FORMAT paFloat32
+#endif
+
+#ifndef SAMPLE_RATE
+#define SAMPLE_RATE 44100
+#endif
 
 #ifndef CHEGA_DE_SAUDADE_DEMUCS_MODEL
 #define CHEGA_DE_SAUDADE_DEMUCS_MODEL "htdemucs_6s"
