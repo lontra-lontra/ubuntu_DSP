@@ -23,7 +23,9 @@ except ImportError:
 HEADER_RE = re.compile(r"^(Re|Im) H input (\d+) <- output (\d+)$")
 
 
-def parse_frequency_matrix_csv(csv_path: str | Path) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+def parse_frequency_matrix_csv(
+    csv_path: str | Path,
+) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
     resolved_path = Path(csv_path).expanduser()
     with resolved_path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle, delimiter=";")
@@ -49,8 +51,13 @@ def parse_frequency_matrix_csv(csv_path: str | Path) -> tuple[np.ndarray, np.nda
 
             input_index = int(match_re.group(2))
             output_index = int(match_re.group(3))
-            if (int(match_im.group(2)), int(match_im.group(3))) != (input_index, output_index):
-                raise ValueError("Real and imaginary columns do not refer to the same channel pair.")
+            if (int(match_im.group(2)), int(match_im.group(3))) != (
+                input_index,
+                output_index,
+            ):
+                raise ValueError(
+                    "Real and imaginary columns do not refer to the same channel pair."
+                )
 
             pairs.append((input_index, output_index, column, column + 1))
             max_input = max(max_input, input_index)
@@ -75,8 +82,16 @@ def parse_frequency_matrix_csv(csv_path: str | Path) -> tuple[np.ndarray, np.nda
 
             frequencies.append(float(row[0]))
             for input_index, output_index, re_column, im_column in pairs:
-                real_value = float(row[re_column]) if re_column < len(row) and row[re_column].strip() else np.nan
-                imag_value = float(row[im_column]) if im_column < len(row) and row[im_column].strip() else np.nan
+                real_value = (
+                    float(row[re_column])
+                    if re_column < len(row) and row[re_column].strip()
+                    else np.nan
+                )
+                imag_value = (
+                    float(row[im_column])
+                    if im_column < len(row) and row[im_column].strip()
+                    else np.nan
+                )
                 re_columns[(input_index, output_index)].append(real_value)
                 im_columns[(input_index, output_index)].append(imag_value)
 
@@ -97,10 +112,37 @@ def parse_frequency_matrix_csv(csv_path: str | Path) -> tuple[np.ndarray, np.nda
     return frequency_axis, response_cube, input_labels, output_labels
 
 
+def finite_complex_mask(values: np.ndarray) -> np.ndarray:
+    return np.isfinite(values.real) & np.isfinite(values.imag)
+
+
 def compute_summary_matrix(response_cube: np.ndarray) -> np.ndarray:
     magnitude = np.abs(response_cube)
-    broadband_rms = np.sqrt(np.nanmean(np.square(magnitude), axis=2))
-    return 20.0 * np.log10(np.maximum(broadband_rms, 1e-12))
+    finite_mask = np.isfinite(magnitude)
+    finite_counts = np.sum(finite_mask, axis=2)
+    squared_magnitude = np.where(finite_mask, np.square(magnitude), 0.0)
+    mean_squared_magnitude = np.divide(
+        np.sum(squared_magnitude, axis=2),
+        finite_counts,
+        out=np.full(finite_counts.shape, np.nan, dtype=float),
+        where=finite_counts > 0,
+    )
+    broadband_rms = np.sqrt(mean_squared_magnitude)
+    return 20.0 * np.log10(np.maximum(broadband_rms, 1.0e-12))
+
+
+def strongest_finite_pairs(summary_db: np.ndarray, count: int = 8) -> np.ndarray:
+    finite_summary = np.isfinite(summary_db)
+    finite_count = int(np.count_nonzero(finite_summary))
+    if finite_count == 0:
+        return np.empty((0, 2), dtype=int)
+
+    strongest_count = min(count, finite_count)
+    strongest_flat = np.argsort(
+        np.where(finite_summary, summary_db, -np.inf),
+        axis=None,
+    )[::-1][:strongest_count]
+    return np.column_stack(np.unravel_index(strongest_flat, summary_db.shape))
 
 
 def _draw_selected_pair(
@@ -123,12 +165,17 @@ def _draw_selected_pair(
     summary_db: np.ndarray,
 ) -> None:
     selected_response = response_cube[input_index, output_index, :]
-    selected_frequency = frequency_axis[valid_frequency_mask]
-    selected_magnitude_db = 20.0 * np.log10(
-        np.maximum(np.abs(selected_response[valid_frequency_mask]), 1e-12)
+    selected_finite_mask = finite_complex_mask(selected_response)
+    selected_valid_mask = valid_frequency_mask & selected_finite_mask
+    selected_response_for_impulse = np.where(
+        selected_finite_mask,
+        selected_response,
+        0.0 + 0.0j,
     )
-    selected_phase_deg = np.rad2deg(np.unwrap(np.angle(selected_response[valid_frequency_mask])))
-    selected_impulse = np.fft.irfft(selected_response, n=impulse_sample_count)
+    selected_impulse = np.fft.irfft(
+        selected_response_for_impulse,
+        n=impulse_sample_count,
+    )
 
     highlight.set_xy((output_index - 0.5, input_index - 0.5))
 
@@ -136,9 +183,76 @@ def _draw_selected_pair(
     ax_phase.clear()
     ax_impulse.clear()
 
-    ax_magnitude.semilogx(selected_frequency, selected_magnitude_db, color="#0f766e", linewidth=2.1)
-    ax_phase.semilogx(selected_frequency, selected_phase_deg, color="#c2410c", linewidth=1.9)
-    ax_impulse.plot(impulse_time_ms, selected_impulse, color="#1d4ed8", linewidth=1.8)
+    ax_magnitude.set_ylabel("Magnitude (dB)")
+    ax_phase.set_ylabel("Phase (deg)")
+    ax_phase.set_xlabel("Frequency (Hz)")
+    ax_impulse.set_ylabel("Impulse")
+    ax_impulse.set_xlabel("Time (ms)")
+    ax_impulse.set_title("Impulse response")
+
+    if not np.any(selected_valid_mask):
+        ax_magnitude.set_title(
+            f"{input_labels[input_index]} <- {output_labels[output_index]} | "
+            "no valid frequency data"
+        )
+        ax_magnitude.text(
+            0.5,
+            0.5,
+            "This channel pair has no finite frequency-response samples.",
+            transform=ax_magnitude.transAxes,
+            va="center",
+            ha="center",
+            bbox={
+                "facecolor": "#fffaf2",
+                "edgecolor": "#d6c7b3",
+                "boxstyle": "round,pad=0.4",
+            },
+        )
+        ax_phase.text(
+            0.5,
+            0.5,
+            "Phase unavailable",
+            transform=ax_phase.transAxes,
+            va="center",
+            ha="center",
+        )
+        ax_impulse.text(
+            0.5,
+            0.5,
+            "Impulse unavailable",
+            transform=ax_impulse.transAxes,
+            va="center",
+            ha="center",
+        )
+        figure.canvas.draw_idle()
+        return
+
+    selected_frequency = frequency_axis[selected_valid_mask]
+    selected_magnitude_db = 20.0 * np.log10(
+        np.maximum(np.abs(selected_response[selected_valid_mask]), 1.0e-12)
+    )
+    selected_phase_deg = np.rad2deg(
+        np.unwrap(np.angle(selected_response[selected_valid_mask]))
+    )
+
+    ax_magnitude.semilogx(
+        selected_frequency,
+        selected_magnitude_db,
+        color="#0f766e",
+        linewidth=2.1,
+    )
+    ax_phase.semilogx(
+        selected_frequency,
+        selected_phase_deg,
+        color="#c2410c",
+        linewidth=1.9,
+    )
+    ax_impulse.plot(
+        impulse_time_ms,
+        selected_impulse,
+        color="#1d4ed8",
+        linewidth=1.8,
+    )
 
     peak_index = int(np.nanargmax(selected_magnitude_db))
     impulse_peak_index = int(np.nanargmax(np.abs(selected_impulse)))
@@ -160,16 +274,10 @@ def _draw_selected_pair(
     ax_magnitude.grid(True, which="both", alpha=0.22)
     ax_phase.grid(True, which="both", alpha=0.22)
     ax_impulse.grid(True, alpha=0.22)
-    ax_magnitude.set_ylabel("Magnitude (dB)")
-    ax_phase.set_ylabel("Phase (deg)")
-    ax_phase.set_xlabel("Frequency (Hz)")
-    ax_impulse.set_ylabel("Impulse")
-    ax_impulse.set_xlabel("Time (ms)")
     ax_magnitude.set_title(
         f"{input_labels[input_index]} <- {output_labels[output_index]} | "
         f"broadband {summary_db[input_index, output_index]:.1f} dB"
     )
-    ax_impulse.set_title("Impulse response")
     ax_magnitude.text(
         0.02,
         0.96,
@@ -183,7 +291,11 @@ def _draw_selected_pair(
         transform=ax_magnitude.transAxes,
         va="top",
         ha="left",
-        bbox={"facecolor": "#fffaf2", "edgecolor": "#d6c7b3", "boxstyle": "round,pad=0.4"},
+        bbox={
+            "facecolor": "#fffaf2",
+            "edgecolor": "#d6c7b3",
+            "boxstyle": "round,pad=0.4",
+        },
     )
     ax_impulse.text(
         0.02,
@@ -198,7 +310,11 @@ def _draw_selected_pair(
         transform=ax_impulse.transAxes,
         va="top",
         ha="left",
-        bbox={"facecolor": "#fffaf2", "edgecolor": "#d6c7b3", "boxstyle": "round,pad=0.4"},
+        bbox={
+            "facecolor": "#fffaf2",
+            "edgecolor": "#d6c7b3",
+            "boxstyle": "round,pad=0.4",
+        },
     )
     figure.canvas.draw_idle()
 
@@ -210,14 +326,39 @@ def plot_topology_matrix(
     selected_pair: tuple[int, int] | None = None,
 ):
     resolved_path = Path(csv_path).expanduser()
-    frequency_axis, response_cube, input_labels, output_labels = parse_frequency_matrix_csv(resolved_path)
+    frequency_axis, response_cube, input_labels, output_labels = (
+        parse_frequency_matrix_csv(resolved_path)
+    )
     summary_db = compute_summary_matrix(response_cube)
+
+    valid_pair_mask = np.any(finite_complex_mask(response_cube), axis=2)
+    invalid_pairs = np.column_stack(np.where(~valid_pair_mask))
+    if invalid_pairs.size > 0:
+        preview_pairs = ", ".join(
+            f"in {input_index} <- out {output_index}"
+            for input_index, output_index in invalid_pairs[:8]
+        )
+        suffix = " ..." if len(invalid_pairs) > 8 else ""
+        print(
+            "Warning: "
+            f"{len(invalid_pairs)} channel pair(s) contain no finite "
+            f"frequency-response data: {preview_pairs}{suffix}"
+        )
+
+    if not np.any(np.isfinite(summary_db)):
+        raise ValueError(
+            "The frequency-domain matrix contains no finite channel-pair summary values."
+        )
+
     impulse_sample_count = max(1, 2 * (frequency_axis.size - 1))
     if frequency_axis.size > 1 and frequency_axis[1] > 0.0:
         sample_rate_estimate = frequency_axis[1] * impulse_sample_count
     else:
         sample_rate_estimate = float(impulse_sample_count)
-    impulse_time_ms = 1000.0 * np.arange(impulse_sample_count, dtype=float) / max(sample_rate_estimate, 1.0)
+    impulse_time_ms = (
+        1000.0 * np.arange(impulse_sample_count, dtype=float)
+        / max(sample_rate_estimate, 1.0)
+    )
 
     plt.rcParams.update(
         {
@@ -233,13 +374,23 @@ def plot_topology_matrix(
     )
 
     figure = plt.figure(figsize=(14.5, 9.2), constrained_layout=True)
-    grid = figure.add_gridspec(3, 2, width_ratios=[1.05, 1.25], height_ratios=[1.0, 1.0, 0.95])
+    grid = figure.add_gridspec(
+        3,
+        2,
+        width_ratios=[1.05, 1.25],
+        height_ratios=[1.0, 1.0, 0.95],
+    )
     ax_heatmap = figure.add_subplot(grid[:, 0])
     ax_magnitude = figure.add_subplot(grid[0, 1])
     ax_phase = figure.add_subplot(grid[1, 1], sharex=ax_magnitude)
     ax_impulse = figure.add_subplot(grid[2, 1])
 
-    heatmap = ax_heatmap.imshow(summary_db, origin="lower", cmap="viridis", aspect="equal")
+    heatmap = ax_heatmap.imshow(
+        summary_db,
+        origin="lower",
+        cmap="viridis",
+        aspect="equal",
+    )
     colorbar = figure.colorbar(heatmap, ax=ax_heatmap, pad=0.03, shrink=0.88)
     colorbar.set_label("Broadband magnitude (dB)")
 
@@ -247,8 +398,12 @@ def plot_topology_matrix(
     output_step = max(1, len(output_labels) // 8)
     ax_heatmap.set_xticks(np.arange(0, len(output_labels), output_step))
     ax_heatmap.set_yticks(np.arange(0, len(input_labels), input_step))
-    ax_heatmap.set_xticklabels([str(index) for index in range(0, len(output_labels), output_step)])
-    ax_heatmap.set_yticklabels([str(index) for index in range(0, len(input_labels), input_step)])
+    ax_heatmap.set_xticklabels(
+        [str(index) for index in range(0, len(output_labels), output_step)]
+    )
+    ax_heatmap.set_yticklabels(
+        [str(index) for index in range(0, len(input_labels), input_step)]
+    )
     ax_heatmap.set_xlabel("Output channel")
     ax_heatmap.set_ylabel("Input channel")
     ax_heatmap.set_title("Topology heatmap\n(click a cell to inspect frequency response)")
@@ -267,9 +422,7 @@ def plot_topology_matrix(
     )
     ax_heatmap.add_patch(highlight)
 
-    strongest_count = min(8, summary_db.size)
-    strongest_flat = np.argsort(summary_db, axis=None)[::-1][:strongest_count]
-    strongest_pairs = np.column_stack(np.unravel_index(strongest_flat, summary_db.shape))
+    strongest_pairs = strongest_finite_pairs(summary_db)
     if strongest_pairs.size > 0:
         ax_heatmap.scatter(
             strongest_pairs[:, 1],
@@ -280,7 +433,8 @@ def plot_topology_matrix(
             linewidths=0.9,
         )
         strongest_lines = [
-            f"{rank + 1}. in {input_index} <- out {output_index}: {summary_db[input_index, output_index]:.1f} dB"
+            f"{rank + 1}. in {input_index} <- out {output_index}: "
+            f"{summary_db[input_index, output_index]:.1f} dB"
             for rank, (input_index, output_index) in enumerate(strongest_pairs)
         ]
         ax_heatmap.text(
@@ -291,7 +445,11 @@ def plot_topology_matrix(
             va="bottom",
             ha="left",
             fontsize=9,
-            bbox={"facecolor": "#fffaf2", "edgecolor": "#d6c7b3", "boxstyle": "round,pad=0.45"},
+            bbox={
+                "facecolor": "#fffaf2",
+                "edgecolor": "#d6c7b3",
+                "boxstyle": "round,pad=0.45",
+            },
         )
 
     ax_magnitude.set_ylabel("Magnitude (dB)")
@@ -310,7 +468,10 @@ def plot_topology_matrix(
 
         output_index = int(round(event.xdata))
         input_index = int(round(event.ydata))
-        if not (0 <= input_index < response_cube.shape[0] and 0 <= output_index < response_cube.shape[1]):
+        if not (
+            0 <= input_index < response_cube.shape[0]
+            and 0 <= output_index < response_cube.shape[1]
+        ):
             return
 
         _draw_selected_pair(
@@ -335,7 +496,7 @@ def plot_topology_matrix(
     figure.canvas.mpl_connect("button_press_event", on_click)
 
     if selected_pair is None:
-        initial_input, initial_output = np.unravel_index(np.nanargmax(summary_db), summary_db.shape)
+        initial_input, initial_output = strongest_pairs[0]
     else:
         initial_input, initial_output = selected_pair
     on_click(
@@ -371,14 +532,18 @@ def display_topology_matrix_widget(csv_path: str | Path):
         return plot_topology_matrix(csv_path, show=True)
 
     resolved_path = Path(csv_path).expanduser()
-    frequency_axis, response_cube, input_labels, output_labels = parse_frequency_matrix_csv(resolved_path)
+    frequency_axis, response_cube, input_labels, output_labels = (
+        parse_frequency_matrix_csv(resolved_path)
+    )
     summary_db = compute_summary_matrix(response_cube)
-    strongest_count = min(8, summary_db.size)
-    strongest_flat = np.argsort(summary_db, axis=None)[::-1][:strongest_count]
-    strongest_pairs = list(zip(*np.unravel_index(strongest_flat, summary_db.shape), strict=False))
+    strongest_pairs_array = strongest_finite_pairs(summary_db)
+    strongest_pairs = [
+        (int(input_index), int(output_index))
+        for input_index, output_index in strongest_pairs_array
+    ]
 
     input_slider = widgets.IntSlider(
-        value=int(strongest_pairs[0][0]) if strongest_pairs else 0,
+        value=strongest_pairs[0][0] if strongest_pairs else 0,
         min=0,
         max=max(0, response_cube.shape[0] - 1),
         step=1,
@@ -386,7 +551,7 @@ def display_topology_matrix_widget(csv_path: str | Path):
         continuous_update=False,
     )
     output_slider = widgets.IntSlider(
-        value=int(strongest_pairs[0][1]) if strongest_pairs else 0,
+        value=strongest_pairs[0][1] if strongest_pairs else 0,
         min=0,
         max=max(0, response_cube.shape[1] - 1),
         step=1,
@@ -396,8 +561,9 @@ def display_topology_matrix_widget(csv_path: str | Path):
     hotspot_dropdown = widgets.Dropdown(
         options=[
             (
-                f"in {input_index} <- out {output_index} ({summary_db[input_index, output_index]:.1f} dB)",
-                (int(input_index), int(output_index)),
+                f"in {input_index} <- out {output_index} "
+                f"({summary_db[input_index, output_index]:.1f} dB)",
+                (input_index, output_index),
             )
             for input_index, output_index in strongest_pairs
         ],
@@ -405,8 +571,9 @@ def display_topology_matrix_widget(csv_path: str | Path):
     )
     hint = widgets.HTML(
         value=(
-            "<b>Selection fallback:</b> this notebook is using a static Matplotlib backend, "
-            "so direct clicking on the heatmap is unavailable here. Use the controls below."
+            "<b>Selection fallback:</b> this notebook is using a static "
+            "Matplotlib backend, so direct clicking on the heatmap is "
+            "unavailable here. Use the controls below."
         )
     )
     output = widgets.Output()

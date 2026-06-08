@@ -50,6 +50,10 @@ set(PORTABLE_USE_MOCK "" CACHE STRING
     "Whether the selected app should use the mock audio backend (ON or OFF).")
 # Help GUIs present the accepted values for the mock-audio switch.
 set_property(CACHE PORTABLE_USE_MOCK PROPERTY STRINGS ON OFF)
+# User-visible configure switch: whether to enable PortAudio's JACK host API when JACK is available.
+option(PORTABLE_ENABLE_JACK
+    "Enable PortAudio JACK host API support when JACK is installed."
+    ON)
 
 # Fail early if the user did not specify which app to build.
 if(PORTABLE_APP STREQUAL "")
@@ -270,8 +274,9 @@ if(NOT PORTABLE_USE_MOCK_BOOL)
     set(PA_USE_ALSA ON CACHE BOOL "" FORCE)
     # Link ALSA directly instead of trying to load it dynamically at runtime.
     set(PA_ALSA_DYNAMIC OFF CACHE BOOL "" FORCE)
-    # Disable JACK support.
-    set(PA_USE_JACK OFF CACHE BOOL "" FORCE)
+    # Enable or disable JACK support explicitly so JACK-based experiments can coexist
+    # with the normal ALSA path in the same repo.
+    set(PA_USE_JACK ${PORTABLE_ENABLE_JACK} CACHE BOOL "" FORCE)
     # Disable PulseAudio support.
     set(PA_USE_PULSEAUDIO OFF CACHE BOOL "" FORCE)
     # Disable sndio support.

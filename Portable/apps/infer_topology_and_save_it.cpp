@@ -2,13 +2,22 @@
 Build from repo root:
   cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=infer_topology_and_save_it -DPORTABLE_USE_MOCK=OFF
   cmake --build Portable/build --target portable_infer_topology_and_save_it --parallel
-
-If `Portable/build` does not exist yet, came from another machine, or you changed
-`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
-the `cmake --build ...` line.
-
-Run:
   ./Portable/build/portable_infer_topology_and_save_it
+
+
+
+    systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+    systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+    killall pipewire pipewire-pulse wireplumber
+    jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
+    jack_lsp
+
+
+
+
+
+
+
 
 Important config:
   mock/real audio is selected by `-DPORTABLE_USE_MOCK=ON/OFF` in the first command.
@@ -22,7 +31,6 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #include <cmath>
 #include <complex>
 #include <iostream>
-#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -39,12 +47,17 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #error "MOCK must be defined by the build system for this target."
 #endif
 
+#ifndef AMPLITUDE
+#define AMPLITUDE 0.2
+#endif
+
 #define CHANNELS 32
 
-#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
+//#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
+#define DEVICE_NAME "system"
 
 #ifndef FRAMES_PER_BUFFER
-#define FRAMES_PER_BUFFER 128
+#define FRAMES_PER_BUFFER 32
 #endif
 
 #ifndef SAMPLE_FORMAT
@@ -55,16 +68,16 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #define SAMPLE_RATE 44100
 #endif
 
-#ifndef SWEEP_TIME_SECONDS
-#define SWEEP_TIME_SECONDS 4.0f
+#ifndef SILENCE_BETWEEN_CHIRPS_SECONDS
+#define SILENCE_BETWEEN_CHIRPS_SECONDS 1.0f
 #endif
 
-#ifndef CHIRP_PADDING
-#define CHIRP_PADDING 0.5f
+#ifndef CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS
+#define CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS 0.5f
 #endif
 
-#ifndef CHIRP_WINDOW_SECONDS
-#define CHIRP_WINDOW_SECONDS 0.5f
+#ifndef PURE_CHIRP_TIME_SECONDS
+#define PURE_CHIRP_TIME_SECONDS 1.0f
 #endif
 
 #ifndef PORTABLE_OUTPUT_DIR
@@ -91,13 +104,6 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #include "portable/impulse_response_analysis.h"
 #include "portable/usefull_singnals.h"
 
-struct SweepTimingRow
-{
-    int frames_to_process = 0;
-    double input_buffer_adc_time = std::numeric_limits<double>::quiet_NaN();
-    double output_buffer_dac_time = std::numeric_limits<double>::quiet_NaN();
-};
-
 struct SweepCaptureData
 {
     float *recorded = nullptr;
@@ -105,75 +111,153 @@ struct SweepCaptureData
     int frame_index = 0;
     int max_frames = 0;
     int active_output_channel = 0;
-    std::vector<SweepTimingRow> *timing_rows = nullptr;
 };
 
-static double quiet_nan()
+static void print_output_sweep_summary(
+    const std::vector<float> &played,
+    const std::vector<float> &recorded,
+    int sweep_samples,
+    int active_output_channel)
 {
-    return std::numeric_limits<double>::quiet_NaN();
-}
-
-static bool is_finite_number(double value)
-{
-    return std::isfinite(value);
-}
-
-static double average_output_minus_input_samples(
-    const std::vector<SweepTimingRow> &timing_rows)
-{
-    double weighted_sum = 0.0;
-    double total_weight = 0.0;
-
-    for (const SweepTimingRow &row : timing_rows)
+    if (sweep_samples <= 0)
     {
-        if (row.frames_to_process <= 0 ||
-            !is_finite_number(row.input_buffer_adc_time) ||
-            !is_finite_number(row.output_buffer_dac_time))
+        return;
+    }
+
+    float played_active_peak = 0.0f;
+    float played_other_peak = 0.0f;
+    float strongest_recorded_peak = 0.0f;
+    int strongest_input_channel = -1;
+
+    for (int frame = 0; frame < sweep_samples; ++frame)
+    {
+        for (int channel = 0; channel < CHANNELS; ++channel)
+        {
+            const float played_sample =
+                played[static_cast<size_t>(frame * CHANNELS + channel)];
+            if (channel == active_output_channel)
+            {
+                played_active_peak =
+                    std::max(played_active_peak, std::fabs(played_sample));
+            }
+            else
+            {
+                played_other_peak =
+                    std::max(played_other_peak, std::fabs(played_sample));
+            }
+        }
+    }
+
+    for (int input_channel = 0; input_channel < CHANNELS; ++input_channel)
+    {
+        float input_peak = 0.0f;
+        for (int frame = 0; frame < sweep_samples; ++frame)
+        {
+            input_peak = std::max(
+                input_peak,
+                std::fabs(
+                    recorded[static_cast<size_t>(frame * CHANNELS + input_channel)]));
+        }
+
+        if (input_peak > strongest_recorded_peak)
+        {
+            strongest_recorded_peak = input_peak;
+            strongest_input_channel = input_channel;
+        }
+    }
+
+    std::cout << "Output sweep summary:"
+              << " out_ch=" << active_output_channel
+              << " played_active_peak=" << played_active_peak
+              << " played_other_peak=" << played_other_peak
+              << " strongest_input_ch=" << strongest_input_channel
+              << " strongest_recorded_peak=" << strongest_recorded_peak
+              << '\n';
+
+    if (played_active_peak <= 1.0e-6f)
+    {
+        std::cerr << "Warning: active output channel "
+                  << active_output_channel
+                  << " was generated near zero inside the app.\n";
+    }
+
+    if (strongest_recorded_peak <= 1.0e-6f)
+    {
+        std::cerr << "Warning: output channel "
+                  << active_output_channel
+                  << " produced near-zero response on every recorded input channel.\n";
+    }
+}
+
+static void print_matching_device_entries(const char *target_name)
+{
+    if (!target_name || !target_name[0])
+    {
+        return;
+    }
+
+    const int device_count = Pa_GetDeviceCount();
+    if (device_count <= 0)
+    {
+        return;
+    }
+
+    int match_count = 0;
+    for (int device_index = 0; device_index < device_count; ++device_index)
+    {
+        const PaDeviceInfo *device_info = Pa_GetDeviceInfo(device_index);
+        if (!device_info || !device_info->name)
         {
             continue;
         }
 
-        const double output_minus_input_samples =
-            (row.output_buffer_dac_time - row.input_buffer_adc_time) *
-            static_cast<double>(SAMPLE_RATE);
-        weighted_sum +=
-            output_minus_input_samples *
-            static_cast<double>(row.frames_to_process);
-        total_weight += static_cast<double>(row.frames_to_process);
+        if (std::string(device_info->name) != std::string(target_name))
+        {
+            continue;
+        }
+
+        match_count++;
+#if !MOCK
+        const PaHostApiInfo *host_api_info =
+            Pa_GetHostApiInfo(device_info->hostApi);
+#endif
+        std::cout << "Matching device entry: [" << device_index << "] "
+                  << device_info->name
+                  << " | in=" << device_info->maxInputChannels
+                  << " out=" << device_info->maxOutputChannels
+                  << " defaultSR=" << device_info->defaultSampleRate
+#if !MOCK
+                  << " hostApi="
+                  << (host_api_info && host_api_info->name
+                          ? host_api_info->name
+                          : "(null)")
+#endif
+                  << '\n';
     }
 
-    if (total_weight <= 0.0)
+    if (match_count > 1)
     {
-        return quiet_nan();
+        std::cout << "Warning: DEVICE_NAME matched "
+                  << match_count
+                  << " PortAudio entries. The app uses the first exact match.\n";
     }
+}
 
-    return weighted_sum / total_weight;
+static float chirp_total_period_seconds()
+{
+    return SILENCE_BETWEEN_CHIRPS_SECONDS +
+           2.0f * CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS +
+           PURE_CHIRP_TIME_SECONDS;
 }
 
 static float chirp_silence_time()
 {
-    const float max_padding =
-        0.5f * SWEEP_TIME_SECONDS - 1.0f / static_cast<float>(SAMPLE_RATE);
-
-    if (max_padding <= 0.0f)
-    {
-        return 0.0f;
-    }
-
-    return std::min(CHIRP_PADDING, max_padding);
+    return 0.5f * SILENCE_BETWEEN_CHIRPS_SECONDS;
 }
 
 static float chirp_window_time()
 {
-    const float active_time = SWEEP_TIME_SECONDS - 2.0f * chirp_silence_time();
-    const float max_window = 0.5f * active_time;
-
-    if (max_window <= 0.0f)
-    {
-        return 0.0f;
-    }
-
-    return std::min(CHIRP_WINDOW_SECONDS, max_window);
+    return CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS;
 }
 
 static float output_sample_for_channel(
@@ -188,18 +272,18 @@ static float output_sample_for_channel(
 
     return portable_classic_chirp(
         t,
-        SWEEP_TIME_SECONDS,
+        chirp_total_period_seconds(),
         chirp_silence_time(),
         20.0f,
         20000.0f,
-        chirp_window_time());
+        chirp_window_time()) * AMPLITUDE;
 }
 
 static int pa_sweep_callback(
     const void *inputBuffer,
     void *outputBuffer,
     unsigned long framesPerBuffer,
-    const PaStreamCallbackTimeInfo *timeInfo,
+    const PaStreamCallbackTimeInfo *,
     PaStreamCallbackFlags,
     void *userData)
 {
@@ -215,18 +299,6 @@ static int pa_sweep_callback(
     const int frames_left = data->max_frames - data->frame_index;
     const int frames_to_process =
         std::max(0, std::min(static_cast<int>(framesPerBuffer), frames_left));
-
-    if (data->timing_rows)
-    {
-        SweepTimingRow row;
-        row.frames_to_process = frames_to_process;
-        if (timeInfo)
-        {
-            row.input_buffer_adc_time = timeInfo->inputBufferAdcTime;
-            row.output_buffer_dac_time = timeInfo->outputBufferDacTime;
-        }
-        data->timing_rows->push_back(row);
-    }
 
     for (int i = 0; i < frames_to_process; ++i)
     {
@@ -435,7 +507,8 @@ static std::string build_python_command(
 int main()
 {
     const int sweep_samples =
-        static_cast<int>(std::round(SWEEP_TIME_SECONDS * static_cast<float>(SAMPLE_RATE)));
+        static_cast<int>(std::round(
+            chirp_total_period_seconds() * static_cast<float>(SAMPLE_RATE)));
     const int impulse_samples =
         std::min(sweep_samples, static_cast<int>(0.5f * static_cast<float>(SAMPLE_RATE)));
     const std::string base_path =
@@ -481,6 +554,7 @@ int main()
               << " out=" << device_info->maxOutputChannels
               << " defaultSR=" << device_info->defaultSampleRate
               << '\n';
+    print_matching_device_entries(DEVICE_NAME);
 
     PaStreamParameters input_parameters{};
     input_parameters.device = device_index;
@@ -535,8 +609,6 @@ int main()
         data.frame_index = 0;
         data.max_frames = sweep_samples;
         data.active_output_channel = output_channel;
-        std::vector<SweepTimingRow> timing_rows;
-        data.timing_rows = &timing_rows;
 
         PaStream *stream = nullptr;
         err = Pa_OpenStream(
@@ -572,18 +644,11 @@ int main()
         Pa_StopStream(stream);
         Pa_CloseStream(stream);
 
-        const double callback_output_minus_input_samples =
-            average_output_minus_input_samples(timing_rows);
-        if (is_finite_number(callback_output_minus_input_samples))
-        {
-            std::cout << "Estimated callback output-input offset for output channel "
-                      << output_channel
-                      << ": " << callback_output_minus_input_samples
-                      << " samples ("
-                      << (1000.0 * callback_output_minus_input_samples /
-                          static_cast<double>(SAMPLE_RATE))
-                      << " ms)\n";
-        }
+        print_output_sweep_summary(
+            played,
+            recorded,
+            sweep_samples,
+            output_channel);
 
         std::vector<float> played_out(static_cast<size_t>(sweep_samples), 0.0f);
         for (int i = 0; i < sweep_samples; ++i)
@@ -603,21 +668,12 @@ int main()
 
             const std::vector<std::complex<float>> frequency_response =
                 estimate_frequency_response_half(played_out, recorded_in);
-            const std::vector<std::complex<float>> corrected_frequency_response =
-                is_finite_number(callback_output_minus_input_samples)
-                    ? advance_frequency_response_half(
-                          frequency_response,
-                          sweep_samples,
-                          callback_output_minus_input_samples)
-                    : frequency_response;
             topology_frequency[static_cast<size_t>(input_channel)]
                               [static_cast<size_t>(output_channel)] =
-                corrected_frequency_response;
+                frequency_response;
 
             const std::vector<float> impulse_response =
-                frequency_response_half_to_time_domain(
-                    corrected_frequency_response,
-                    sweep_samples);
+                frequency_response_half_to_time_domain(frequency_response, sweep_samples);
 
             const int copy_samples =
                 std::min(impulse_samples, static_cast<int>(impulse_response.size()));
@@ -657,7 +713,8 @@ int main()
 
     if (!save_frequency_domain_matrix_csv(topology_frequency, sweep_samples, frequency_csv_path))
     {
-        std::cerr << "Failed to save frequency-domain topology CSV: " << frequency_csv_path << '\n';
+        std::cerr << "Failed to save frequency-domain topology CSV: " << frequency_csv_path
+                  << '\n';
         return 1;
     }
 
@@ -666,9 +723,12 @@ int main()
     std::cout << "Device index: " << device_index << '\n';
     std::cout << "CHANNELS=" << CHANNELS
               << " SAMPLE_RATE=" << SAMPLE_RATE
-              << " SWEEP_TIME_SECONDS=" << SWEEP_TIME_SECONDS
-              << " CHIRP_SILENCE_SECONDS=" << chirp_silence_time()
-              << " CHIRP_WINDOW_SECONDS=" << chirp_window_time()
+              << " CHIRP_TOTAL_PERIOD_SECONDS=" << chirp_total_period_seconds()
+              << " SILENCE_BETWEEN_CHIRPS_SECONDS="
+              << SILENCE_BETWEEN_CHIRPS_SECONDS
+              << " CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS="
+              << CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS
+              << " PURE_CHIRP_TIME_SECONDS=" << PURE_CHIRP_TIME_SECONDS
               << '\n';
 
     for (size_t output_channel = 0; output_channel < raw_csv_paths.size(); ++output_channel)

@@ -3,11 +3,6 @@ Build from repo root:
   cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=400hz_on_all_channels -DPORTABLE_USE_MOCK=OFF
   cmake --build Portable/build --target portable_400hz_on_all_channels --parallel
 
-If `Portable/build` does not exist yet, came from another machine, or you changed
-`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
-the `cmake --build ...` line.
-
-Run:
   ./Portable/build/portable_400hz_on_all_channels
 
 Important config:
@@ -40,10 +35,10 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 #define CHANNELS 32
 
-#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:1,0)"
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
 
 #ifndef FRAMES_PER_BUFFER
-#define FRAMES_PER_BUFFER 128
+#define FRAMES_PER_BUFFER 1024
 #endif
 
 #ifndef SAMPLE_FORMAT
@@ -59,7 +54,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #endif
 
 #ifndef TONE_SECONDS
-#define TONE_SECONDS 0.5
+#define TONE_SECONDS 5
 #endif
 
 #ifndef SILENCE_SECONDS
@@ -67,7 +62,7 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #endif
 
 #ifndef TONE_AMPLITUDE
-#define TONE_AMPLITUDE 0.5
+#define TONE_AMPLITUDE 0.2
 #endif
 
 #if MOCK
