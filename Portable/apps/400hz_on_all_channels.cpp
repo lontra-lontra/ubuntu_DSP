@@ -1,16 +1,34 @@
 /*
 Build from repo root:
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=400hz_on_all_channels -DPORTABLE_USE_MOCK=OFF
-  cmake --build Portable/build --target portable_400hz_on_all_channels --parallel
+  direct machine:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=400hz_on_all_channels -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=OFF -DPORTABLE_DEVICE_NAME="MADIface USB (24285073): Audio (hw:2,0)" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_400hz_on_all_channels --parallel
+    ./Portable/build/portable_400hz_on_all_channels
 
-  ./Portable/build/portable_400hz_on_all_channels
+  JACK:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=400hz_on_all_channels -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=ON -DPORTABLE_DEVICE_NAME="system" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_400hz_on_all_channels --parallel
+    ./Portable/build/portable_400hz_on_all_channels
 
-Important config:
-  mock/real audio is selected by `-DPORTABLE_USE_MOCK=ON/OFF` in the first command.
-  #define CHANNELS 32
-  #define DEVICE_NAME ...
+To try mock audio instead, rerun either `cmake -S ...` command with `-DPORTABLE_USE_MOCK=ON`.
 
-To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
+Build-time config:
+  `CHANNELS` is fixed at 32 in this file.
+  `DEVICE_NAME`, `SAMPLE_RATE`, and `FRAMES_PER_BUFFER` come from the CMake command above.
+
+Prepare JACK for direct hardware access:
+  systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  killall pipewire pipewire-pulse wireplumber
+
+Start JACK:
+  jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
+  jack_lsp
+
+Restore desktop audio afterwards:
+  killall jackd
+  systemctl --user unmask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user start wireplumber.service pipewire.service pipewire-pulse.service
 */
 
 #include <algorithm>
@@ -20,6 +38,8 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "portable/build_config.h"
 
 #ifndef TRUE
 #define TRUE 1
@@ -35,7 +55,9 @@ To switch to mock audio, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
 
 #define CHANNELS 32
 
+#ifndef DEVICE_NAME
 #define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
+#endif
 
 #ifndef FRAMES_PER_BUFFER
 #define FRAMES_PER_BUFFER 1024

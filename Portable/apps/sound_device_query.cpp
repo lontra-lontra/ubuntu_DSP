@@ -1,58 +1,36 @@
 /*
 Build from repo root:
-
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_query -DPORTABLE_USE_MOCK=OFF
-  cmake --build Portable/build --target portable_sound_device_query --parallel
-
-If `Portable/build` does not exist yet, came from another machine, or you changed
-`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
-the `cmake --build ...` line.
-
-Run:
-  ./Portable/build/portable_sound_device_query
-
-To try mock audio instead, rerun the first command with `-DPORTABLE_USE_MOCK=ON`.
-
-Important config:
-  local device config in this file:
-  #define DEVICE_NAME ...
-  #define CHANNELS ...
-  #define SAMPLE_RATE ...
-  #define FRAMES_PER_BUFFER ...
-  #define SAMPLE_FORMAT ...
-  app-specific timing config in this file:
-  #define PLAY_AND_LISTEN_SECONDS ...
-  #define LISTEN_SECONDS ...
-
-Linux JACK experiment notes:
-  This repo currently sets PA_USE_JACK OFF on Linux in Portable/CMakeLists.txt,
-  so changing DEVICE_NAME alone will not move this app onto JACK. First enable
-  JACK in that CMake file, then rebuild.
-
-  If you want a real jackd server bound directly to the MADIface hardware, you
-  usually need PipeWire/WirePlumber to release hw:1,0 first:
-    systemctl --user stop pipewire pipewire-pulse wireplumber
-    killall pipewire wireplumber
-
-  Start a JACK server on the MADIface:
-    jackd -d alsa -d hw:1,0 -r 48000 -p 32 -n 20
-
-  Inspect JACK ports:
-    jack_lsp
-
-  For a JACK-enabled PortAudio build, DEVICE_NAME will usually be a JACK client
-  name such as "system", but verify the exact PortAudio device list first before
-  changing the define below.
-
-  Run this app:
+  direct machine:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_query -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=OFF -DPORTABLE_DEVICE_NAME="MADIface USB (24285073): Audio (hw:2,0)" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_sound_device_query --parallel
     ./Portable/build/portable_sound_device_query
 
-  Stop JACK and restore the normal desktop audio stack:
-    killall jackd
-    systemctl --user start wireplumber pipewire pipewire-pulse
+  JACK:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=sound_device_query -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=ON -DPORTABLE_DEVICE_NAME="system" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_sound_device_query --parallel
+    ./Portable/build/portable_sound_device_query
 
-  If you want PipeWire's JACK-compatibility layer instead of a real jackd
-  server, do not stop PipeWire; use pw-jack for that separate experiment.
+To try mock audio instead, rerun either `cmake -S ...` command with `-DPORTABLE_USE_MOCK=ON`.
+
+Build-time config:
+  `CHANNELS` is fixed in this file.
+  `DEVICE_NAME`, `SAMPLE_RATE`, and `FRAMES_PER_BUFFER` come from the CMake command above.
+  `SAMPLE_FORMAT` still lives in this file.
+  app-specific timing config still lives in this file.
+
+Prepare JACK for direct hardware access:
+  systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  killall pipewire pipewire-pulse wireplumber
+
+Start JACK:
+  jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
+  jack_lsp
+
+Restore desktop audio afterwards:
+  killall jackd
+  systemctl --user unmask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user start wireplumber.service pipewire.service pipewire-pulse.service
 */
 
 #include <algorithm>
@@ -60,6 +38,8 @@ Linux JACK experiment notes:
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "portable/build_config.h"
 
 #ifndef TRUE
 #define TRUE 1

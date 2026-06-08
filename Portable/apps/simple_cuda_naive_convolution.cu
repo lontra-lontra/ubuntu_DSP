@@ -1,17 +1,34 @@
 /*
 Build from repo root:
+  direct machine:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_naive_convolution -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=OFF -DPORTABLE_DEVICE_NAME="MADIface USB (24285073): Audio (hw:2,0)" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_simple_cuda_naive_convolution --parallel
+    ./Portable/build/portable_simple_cuda_naive_convolution
 
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_naive_convolution -DPORTABLE_USE_MOCK=ON
-  cmake --build Portable/build --target portable_simple_cuda_naive_convolution --parallel
+  JACK:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=simple_cuda_naive_convolution -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=ON -DPORTABLE_DEVICE_NAME="system" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
+    cmake --build Portable/build --target portable_simple_cuda_naive_convolution --parallel
+    ./Portable/build/portable_simple_cuda_naive_convolution
 
-If `Portable/build` does not exist yet, came from another machine, or you changed
-`PORTABLE_APP` / `PORTABLE_USE_MOCK`, rerun the first `cmake -S ...` line before
-the `cmake --build ...` line.
+To try mock audio instead, rerun either `cmake -S ...` command with `-DPORTABLE_USE_MOCK=ON`.
 
-Run:
-  ./Portable/build/portable_simple_cuda_naive_convolution
+Build-time config:
+  `INPUT_CHANNELS` and `OUTPUT_CHANNELS` are fixed in this file.
+  `DEVICE_NAME`, `SAMPLE_RATE`, and `FRAMES_PER_BUFFER` come from the CMake command above.
 
-To try real PortAudio instead, rerun the first command with `-DPORTABLE_USE_MOCK=OFF`.
+Prepare JACK for direct hardware access:
+  systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  killall pipewire pipewire-pulse wireplumber
+
+Start JACK:
+  jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
+  jack_lsp
+
+Restore desktop audio afterwards:
+  killall jackd
+  systemctl --user unmask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user start wireplumber.service pipewire.service pipewire-pulse.service
 
 This is a deliberately naive CUDA FIR example.
 Each output/input channel pair owns one KERNEL_SIZE-tap kernel uploaded once to the GPU.
@@ -33,6 +50,8 @@ Each thread sums contributions from every input channel.
 #include <string>
 #include <vector>
 
+#include "portable/build_config.h"
+
 #ifndef TRUE
 #define TRUE 1
 #endif
@@ -48,7 +67,9 @@ Each thread sums contributions from every input channel.
 #define INPUT_CHANNELS 5
 #define OUTPUT_CHANNELS 5
 
+#ifndef DEVICE_NAME
 #define DEVICE_NAME "default"
+#endif
 
 #ifndef SAMPLE_FORMAT
 #define SAMPLE_FORMAT paFloat32

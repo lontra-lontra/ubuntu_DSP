@@ -1,33 +1,32 @@
 /*
 Build from repo root:
-  cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=calculate_single_delay -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=ON
-  cmake --build Portable/build --target portable_calculate_single_delay --parallel
-  ./Portable/build/portable_calculate_single_delay
+  direct machine:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=calculate_single_delay -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=OFF -DPORTABLE_DEVICE_NAME="MADIface USB (24285073): Audio (hw:2,0)" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32 -DPORTABLE_INPUT_PORT=5 -DPORTABLE_OUTPUT_PORT=5 -DPORTABLE_CORRELATION_THRESHOLD=0.95
+    cmake --build Portable/build --target portable_calculate_single_delay --parallel
+    ./Portable/build/portable_calculate_single_delay
 
-Important flags and defaults:
-  --jack=true
-  --jack_n_of_buffers=3
-  --input_port=5
-  --output_port=5
-  --threshold=0.95
+  JACK:
+    cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=calculate_single_delay -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=ON -DPORTABLE_DEVICE_NAME="system" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32 -DPORTABLE_INPUT_PORT=5 -DPORTABLE_OUTPUT_PORT=5 -DPORTABLE_CORRELATION_THRESHOLD=0.95
+    cmake --build Portable/build --target portable_calculate_single_delay --parallel
+    ./Portable/build/portable_calculate_single_delay
 
-JACK protocol notes:
-  This app can use PortAudio's JACK host API, but JACK must already be running.
-  The `--jack_n_of_buffers` flag is advisory: it is the `jackd -n` value used in
-  the suggested startup command below, not something PortAudio can change after
-  the server is active.
+Build-time config:
+  `DEVICE_NAME`, `SAMPLE_RATE`, `FRAMES_PER_BUFFER`, `INPUT_PORT_1BASED`,
+  `OUTPUT_PORT_1BASED`, and `CORRELATION_THRESHOLD` come from the CMake command above.
 
-  A typical "real JACK server on the MADIface" sequence is:
-    systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
-    systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
-    killall pipewire pipewire-pulse wireplumber
-    jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
-    jack_lsp
+Prepare JACK for direct hardware access:
+  systemctl --user mask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  killall pipewire pipewire-pulse wireplumber
 
-  To restore the normal desktop stack afterwards:
-    killall jackd
-    systemctl --user unmask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
-    systemctl --user start wireplumber.service pipewire.service pipewire-pulse.service
+Start JACK:
+  jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
+  jack_lsp
+
+Restore desktop audio afterwards:
+  killall jackd
+  systemctl --user unmask --runtime pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+  systemctl --user start wireplumber.service pipewire.service pipewire-pulse.service
 */
 
 #include <algorithm>
@@ -39,10 +38,11 @@ JACK protocol notes:
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "portable/build_config.h"
 
 #ifndef TRUE
 #define TRUE 1
@@ -92,32 +92,28 @@ JACK protocol notes:
 #define INTERNAL_PREROLL_SECONDS 0.05
 #endif
 
-#ifndef DEFAULT_JACK_N_OF_BUFFERS
-#define DEFAULT_JACK_N_OF_BUFFERS 3
+#ifndef INPUT_PORT_1BASED
+#define INPUT_PORT_1BASED 5
 #endif
 
-#ifndef DEFAULT_INPUT_PORT_1BASED
-#define DEFAULT_INPUT_PORT_1BASED 5
+#ifndef OUTPUT_PORT_1BASED
+#define OUTPUT_PORT_1BASED 5
 #endif
 
-#ifndef DEFAULT_OUTPUT_PORT_1BASED
-#define DEFAULT_OUTPUT_PORT_1BASED 5
-#endif
-
-#ifndef DEFAULT_CORRELATION_THRESHOLD
-#define DEFAULT_CORRELATION_THRESHOLD 0.95
+#ifndef CORRELATION_THRESHOLD
+#define CORRELATION_THRESHOLD 0.95
 #endif
 
 #ifndef MINIMUM_INPUT_PEAK
 #define MINIMUM_INPUT_PEAK 1.0e-6
 #endif
 
-#ifndef JACK_DEVICE_NAME
-#define JACK_DEVICE_NAME "system"
+#ifndef DEVICE_NAME
+#if MOCK
+#define DEVICE_NAME "default"
+#else
+#define DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
 #endif
-
-#ifndef ALSA_DEVICE_NAME
-#define ALSA_DEVICE_NAME "MADIface USB (24285073): Audio (hw:2,0)"
 #endif
 
 #ifndef PORTABLE_OUTPUT_DIR
@@ -146,11 +142,9 @@ std::atomic<bool> g_keep_running{true};
 
 struct Options
 {
-    bool jack = true;
-    int jack_n_of_buffers = DEFAULT_JACK_N_OF_BUFFERS;
-    int input_port_1based = DEFAULT_INPUT_PORT_1BASED;
-    int output_port_1based = DEFAULT_OUTPUT_PORT_1BASED;
-    double threshold = DEFAULT_CORRELATION_THRESHOLD;
+    int input_port_1based = INPUT_PORT_1BASED;
+    int output_port_1based = OUTPUT_PORT_1BASED;
+    double threshold = CORRELATION_THRESHOLD;
 };
 
 struct CaptureData
@@ -210,261 +204,10 @@ double sample_offset_to_milliseconds(double sample_count)
     return 1000.0 * sample_count / static_cast<double>(SAMPLE_RATE);
 }
 
-void print_usage(const char *argv0)
-{
-    std::cout
-        << "Usage:\n"
-        << "  " << (argv0 ? argv0 : "./portable_calculate_single_delay") << " [flags]\n\n"
-        << "Flags:\n"
-        << "  --jack=true|false\n"
-        << "  --jack_n_of_buffers <int>\n"
-        << "  --input_port <1-based int>\n"
-        << "  --output_port <1-based int>\n"
-        << "  --threshold <0..1>\n";
-}
-
-std::optional<bool> parse_bool_text(const std::string &value_text)
-{
-    const std::string value = portable_ascii_lower(value_text);
-    if (value == "1" || value == "true" || value == "yes" || value == "on")
-    {
-        return true;
-    }
-    if (value == "0" || value == "false" || value == "no" || value == "off")
-    {
-        return false;
-    }
-    return std::nullopt;
-}
-
-bool parse_int_argument(
-    const std::string &name,
-    const std::string &value_text,
-    int *out_value)
-{
-    if (!out_value)
-    {
-        return false;
-    }
-    try
-    {
-        *out_value = std::stoi(value_text);
-        return true;
-    }
-    catch (const std::exception &)
-    {
-        std::cerr << "Invalid integer for " << name << ": " << value_text << '\n';
-        return false;
-    }
-}
-
-bool parse_double_argument(
-    const std::string &name,
-    const std::string &value_text,
-    double *out_value)
-{
-    if (!out_value)
-    {
-        return false;
-    }
-    try
-    {
-        *out_value = std::stod(value_text);
-        return true;
-    }
-    catch (const std::exception &)
-    {
-        std::cerr << "Invalid number for " << name << ": " << value_text << '\n';
-        return false;
-    }
-}
-
-enum class ParseOptionsResult
-{
-    kOk,
-    kHelpRequested,
-    kError,
-};
-
-ParseOptionsResult parse_options(int argc, char **argv, Options *options)
-{
-    if (!options)
-    {
-        return ParseOptionsResult::kError;
-    }
-
-    for (int argi = 1; argi < argc; ++argi)
-    {
-        const std::string arg = argv[argi] ? std::string(argv[argi]) : std::string();
-        if (arg == "--help" || arg == "-h")
-        {
-            print_usage(argv[0]);
-            return ParseOptionsResult::kHelpRequested;
-        }
-
-        auto take_value = [&](const std::string &name) -> std::optional<std::string>
-        {
-            if (argi + 1 >= argc)
-            {
-                std::cerr << "Missing value for " << name << '\n';
-                return std::nullopt;
-            }
-            return std::string(argv[++argi] ? argv[argi] : "");
-        };
-
-        auto parse_prefixed_value = [&](const std::string &prefix) -> std::optional<std::string>
-        {
-            if (arg.rfind(prefix, 0) != 0)
-            {
-                return std::nullopt;
-            }
-            return arg.substr(prefix.size());
-        };
-
-        if (arg == "--jack" || arg == "--jack_mode")
-        {
-            const std::optional<std::string> value = take_value("--jack");
-            if (!value)
-            {
-                return ParseOptionsResult::kError;
-            }
-            const std::optional<bool> parsed = parse_bool_text(*value);
-            if (!parsed)
-            {
-                std::cerr << "Invalid boolean for --jack: " << *value << '\n';
-                return ParseOptionsResult::kError;
-            }
-            options->jack = *parsed;
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--jack="))
-        {
-            const std::optional<bool> parsed = parse_bool_text(*value);
-            if (!parsed)
-            {
-                std::cerr << "Invalid boolean for --jack: " << *value << '\n';
-                return ParseOptionsResult::kError;
-            }
-            options->jack = *parsed;
-            continue;
-        }
-
-        if (arg == "--jack_n_of_buffers" || arg == "--jack-n-of-buffers")
-        {
-            const std::optional<std::string> value = take_value(arg);
-            if (!value || !parse_int_argument(arg, *value, &options->jack_n_of_buffers))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--jack_n_of_buffers="))
-        {
-            if (!parse_int_argument("--jack_n_of_buffers", *value, &options->jack_n_of_buffers))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--jack-n-of-buffers="))
-        {
-            if (!parse_int_argument("--jack-n-of-buffers", *value, &options->jack_n_of_buffers))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-
-        if (arg == "--input_port" || arg == "--input-port")
-        {
-            const std::optional<std::string> value = take_value(arg);
-            if (!value || !parse_int_argument(arg, *value, &options->input_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--input_port="))
-        {
-            if (!parse_int_argument("--input_port", *value, &options->input_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--input-port="))
-        {
-            if (!parse_int_argument("--input-port", *value, &options->input_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-
-        if (arg == "--output_port" || arg == "--output-port")
-        {
-            const std::optional<std::string> value = take_value(arg);
-            if (!value || !parse_int_argument(arg, *value, &options->output_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--output_port="))
-        {
-            if (!parse_int_argument("--output_port", *value, &options->output_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--output-port="))
-        {
-            if (!parse_int_argument("--output-port", *value, &options->output_port_1based))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-
-        if (arg == "--threshold")
-        {
-            const std::optional<std::string> value = take_value(arg);
-            if (!value || !parse_double_argument(arg, *value, &options->threshold))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-        if (const std::optional<std::string> value =
-                parse_prefixed_value("--threshold="))
-        {
-            if (!parse_double_argument("--threshold", *value, &options->threshold))
-            {
-                return ParseOptionsResult::kError;
-            }
-            continue;
-        }
-
-        std::cerr << "Unknown argument: " << arg << '\n';
-        return ParseOptionsResult::kError;
-    }
-
-    return ParseOptionsResult::kOk;
-}
-
 void print_requested_config(const Options &options)
 {
     std::cout << "Requested config:"
-              << " jack=" << (options.jack ? "true" : "false")
-              << " jack_n_of_buffers=" << options.jack_n_of_buffers
+              << " DEVICE_NAME=" << DEVICE_NAME
               << " input_port_1based=" << options.input_port_1based
               << " output_port_1based=" << options.output_port_1based
               << " threshold=" << options.threshold
@@ -500,137 +243,12 @@ void print_selected_device_summary(
               << '\n';
 }
 
-std::string host_api_name_for_device(const PaDeviceInfo *device_info)
-{
-    if (!device_info)
-    {
-        return std::string();
-    }
-#if MOCK
-    return "mock";
-#else
-    const PaHostApiInfo *host_api_info = Pa_GetHostApiInfo(device_info->hostApi);
-    if (!host_api_info || !host_api_info->name)
-    {
-        return std::string();
-    }
-    return host_api_info->name;
-#endif
-}
-
-bool string_contains_case_insensitive(
-    const std::string &haystack,
-    const std::string &needle)
-{
-    return portable_ascii_lower(haystack).find(portable_ascii_lower(needle)) !=
-           std::string::npos;
-}
-
-int select_real_device(
-    bool use_jack,
-    int stream_channel_count)
-{
-    const int device_count = Pa_GetDeviceCount();
-    if (device_count < 0)
-    {
-        return device_count;
-    }
-
-    int best_system_jack = -1;
-    int best_any_jack = -1;
-    int best_any_alsa = -1;
-
-    for (int device_index = 0; device_index < device_count; ++device_index)
-    {
-        const PaDeviceInfo *device_info = Pa_GetDeviceInfo(device_index);
-        if (!device_info || !device_info->name)
-        {
-            continue;
-        }
-        if (device_info->maxInputChannels < stream_channel_count ||
-            device_info->maxOutputChannels < stream_channel_count)
-        {
-            continue;
-        }
-
-        const std::string device_name = device_info->name;
-        const std::string host_api_name = host_api_name_for_device(device_info);
-
-        if (use_jack)
-        {
-            if (!string_contains_case_insensitive(host_api_name, "jack"))
-            {
-                continue;
-            }
-
-            if (device_name == JACK_DEVICE_NAME)
-            {
-                return device_index;
-            }
-            if (best_system_jack < 0 &&
-                string_contains_case_insensitive(device_name, "system"))
-            {
-                best_system_jack = device_index;
-            }
-            if (best_any_jack < 0)
-            {
-                best_any_jack = device_index;
-            }
-        }
-        else
-        {
-            if (device_name == ALSA_DEVICE_NAME)
-            {
-                return device_index;
-            }
-            if (best_any_alsa < 0 &&
-                string_contains_case_insensitive(device_name, "madiface"))
-            {
-                best_any_alsa = device_index;
-            }
-        }
-    }
-
-    if (use_jack)
-    {
-        if (best_system_jack >= 0)
-        {
-            return best_system_jack;
-        }
-        if (best_any_jack >= 0)
-        {
-            return best_any_jack;
-        }
-        std::cerr
-            << "No JACK PortAudio device with at least "
-            << stream_channel_count << " in/out channels was found.\n"
-            << "This usually means one of these is false:\n"
-            << "  1. JACK support was enabled at configure time (-DPORTABLE_ENABLE_JACK=ON)\n"
-            << "  2. a JACK server is already running\n"
-            << "  3. JACK owns the hardware instead of PipeWire/WirePlumber\n";
-    }
-    else
-    {
-        if (best_any_alsa >= 0)
-        {
-            return best_any_alsa;
-        }
-    }
-
-    list_all_devices();
-    return -1;
-}
-
-int select_measurement_device(
-    bool use_jack,
-    int stream_channel_count)
+int select_measurement_device()
 {
 #if MOCK
-    (void)use_jack;
-    (void)stream_channel_count;
-    return select_device_by_name("default", true);
+    return select_device_by_name(DEVICE_NAME, true);
 #else
-    return select_real_device(use_jack, stream_channel_count);
+    return select_device_by_name(DEVICE_NAME, true);
 #endif
 }
 
@@ -1118,20 +736,11 @@ bool run_single_capture(
 
 } // namespace
 
-int main(int argc, char **argv)
+int main()
 {
     std::signal(SIGINT, handle_interrupt_signal);
 
     Options options;
-    const ParseOptionsResult parse_result = parse_options(argc, argv, &options);
-    if (parse_result == ParseOptionsResult::kHelpRequested)
-    {
-        return 0;
-    }
-    if (parse_result != ParseOptionsResult::kOk)
-    {
-        return 1;
-    }
 
     if (options.input_port_1based <= 0 || options.output_port_1based <= 0)
     {
@@ -1144,12 +753,6 @@ int main(int argc, char **argv)
         std::cerr << "threshold must be in [0, 1].\n";
         return 1;
     }
-    if (options.jack_n_of_buffers <= 0)
-    {
-        std::cerr << "jack_n_of_buffers must be positive.\n";
-        return 1;
-    }
-
     const int stream_channel_count =
         std::max(options.input_port_1based, options.output_port_1based);
     const int input_channel_index = options.input_port_1based - 1;
@@ -1161,14 +764,6 @@ int main(int argc, char **argv)
     const int total_capture_frames = pre_roll_frames + interaction_frames;
 
     print_requested_config(options);
-    if (options.jack)
-    {
-        std::cout
-            << "Suggested JACK startup command for this run:\n"
-            << "  jackd -d alsa -d hw:2,0 -r " << SAMPLE_RATE
-            << " -p " << FRAMES_PER_BUFFER
-            << " -n " << options.jack_n_of_buffers << '\n';
-    }
 
     const PaError init_error = Pa_Initialize();
     if (init_error != paNoError)
@@ -1182,8 +777,7 @@ int main(int argc, char **argv)
     register_mock_devices();
 #endif
 
-    const int device_index =
-        select_measurement_device(options.jack, stream_channel_count);
+    const int device_index = select_measurement_device();
     if (device_index < 0)
     {
         Pa_Terminate();

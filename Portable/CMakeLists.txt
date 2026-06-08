@@ -21,6 +21,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Absolute path to this repo's public headers, used by most app targets.
 set(PORTABLE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# Absolute path to the generated-header folder used for build-time config.
+set(PORTABLE_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # Absolute path to the repo output folder used by some apps and helper code.
 set(PORTABLE_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/output")
 # Absolute path to the generic plotting helper script.
@@ -54,6 +56,24 @@ set_property(CACHE PORTABLE_USE_MOCK PROPERTY STRINGS ON OFF)
 option(PORTABLE_ENABLE_JACK
     "Enable PortAudio JACK host API support when JACK is installed."
     ON)
+# User-visible configure switch: PortAudio device name passed into audio apps.
+set(PORTABLE_DEVICE_NAME "" CACHE STRING
+    "PortAudio device name for audio apps, for example `system` or `MADIface USB (24285073): Audio (hw:2,0)`.")
+# User-visible configure switch: sample rate passed into audio apps.
+set(PORTABLE_SAMPLE_RATE "44100" CACHE STRING
+    "Sample rate passed into audio apps as the SAMPLE_RATE compile-time macro.")
+# User-visible configure switch: callback block size passed into audio apps.
+set(PORTABLE_FRAMES_PER_BUFFER "32" CACHE STRING
+    "Frames per buffer passed into audio apps as the FRAMES_PER_BUFFER compile-time macro.")
+# User-visible configure switch: 1-based input port used by apps that need a single input-channel selection.
+set(PORTABLE_INPUT_PORT "5" CACHE STRING
+    "1-based input port passed into apps that expose INPUT_PORT_1BASED.")
+# User-visible configure switch: 1-based output port used by apps that need a single output-channel selection.
+set(PORTABLE_OUTPUT_PORT "5" CACHE STRING
+    "1-based output port passed into apps that expose OUTPUT_PORT_1BASED.")
+# User-visible configure switch: correlation threshold used by delay-measurement style apps.
+set(PORTABLE_CORRELATION_THRESHOLD "0.95" CACHE STRING
+    "Correlation threshold passed into apps that expose CORRELATION_THRESHOLD.")
 
 # Fail early if the user did not specify which app to build.
 if(PORTABLE_APP STREQUAL "")
@@ -167,6 +187,8 @@ endif()
 
 # Normalize path strings before embedding them into compile-time macros.
 file(TO_CMAKE_PATH "${PORTABLE_OUTPUT_DIR}" PORTABLE_OUTPUT_DIR_PATH)
+# Normalize the user-selected PortAudio device name before embedding it into compile-time macros.
+file(TO_CMAKE_PATH "${PORTABLE_DEVICE_NAME}" PORTABLE_DEVICE_NAME_PATH)
 # Normalize the generic plot script path before embedding it into compile-time macros.
 file(TO_CMAKE_PATH "${PORTABLE_PLOT_SCRIPT}" PORTABLE_PLOT_SCRIPT_PATH)
 # Normalize the callback timing viewer path before embedding it into compile-time macros.
@@ -177,6 +199,76 @@ file(TO_CMAKE_PATH "${PORTABLE_TOPOLOGY_VIEW_SCRIPT}" PORTABLE_TOPOLOGY_VIEW_SCR
 file(TO_CMAKE_PATH "${PORTABLE_EXACT_CONV_VIEW_SCRIPT}" PORTABLE_EXACT_CONV_VIEW_SCRIPT_PATH)
 # Normalize the detect-timing plot helper path before embedding it into compile-time macros.
 file(TO_CMAKE_PATH "${PORTABLE_DETECT_TIMMING_PLOT_SCRIPT}" PORTABLE_DETECT_TIMMING_PLOT_SCRIPT_PATH)
+# Make sure the generated include tree exists before writing headers into it.
+file(MAKE_DIRECTORY "${PORTABLE_GENERATED_INCLUDE_DIR}/portable")
+
+# Prepare text inserted into the generated build-config header.
+set(PORTABLE_BUILD_CONFIG_OUTPUT_DIR_DEFINE
+    "#define PORTABLE_OUTPUT_DIR \"${PORTABLE_OUTPUT_DIR_PATH}\"")
+set(PORTABLE_BUILD_CONFIG_PLOT_SCRIPT_DEFINE
+    "#define PORTABLE_PLOT_SCRIPT \"${PORTABLE_PLOT_SCRIPT_PATH}\"")
+set(PORTABLE_BUILD_CONFIG_CALLBACK_TIMING_VIEW_SCRIPT_DEFINE
+    "#define PORTABLE_CALLBACK_TIMING_VIEW_SCRIPT \"${PORTABLE_CALLBACK_TIMING_VIEW_SCRIPT_PATH}\"")
+set(PORTABLE_BUILD_CONFIG_TOPOLOGY_VIEW_SCRIPT_DEFINE
+    "#define PORTABLE_TOPOLOGY_VIEW_SCRIPT \"${PORTABLE_TOPOLOGY_VIEW_SCRIPT_PATH}\"")
+set(PORTABLE_BUILD_CONFIG_EXACT_CONV_VIEW_SCRIPT_DEFINE
+    "#define PORTABLE_EXACT_CONV_VIEW_SCRIPT \"${PORTABLE_EXACT_CONV_VIEW_SCRIPT_PATH}\"")
+set(PORTABLE_BUILD_CONFIG_DETECT_TIMMING_PLOT_SCRIPT_DEFINE
+    "#define PORTABLE_DETECT_TIMMING_PLOT_SCRIPT \"${PORTABLE_DETECT_TIMMING_PLOT_SCRIPT_PATH}\"")
+
+if(NOT PORTABLE_DEVICE_NAME STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_DEVICE_NAME_DEFINE
+        "#define DEVICE_NAME \"${PORTABLE_DEVICE_NAME_PATH}\"")
+else()
+    set(PORTABLE_BUILD_CONFIG_DEVICE_NAME_DEFINE
+        "/* DEVICE_NAME comes from the source fallback when not set in CMake. */")
+endif()
+
+if(NOT PORTABLE_SAMPLE_RATE STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_SAMPLE_RATE_DEFINE
+        "#define SAMPLE_RATE ${PORTABLE_SAMPLE_RATE}")
+else()
+    set(PORTABLE_BUILD_CONFIG_SAMPLE_RATE_DEFINE
+        "/* SAMPLE_RATE comes from the source fallback when not set in CMake. */")
+endif()
+
+if(NOT PORTABLE_FRAMES_PER_BUFFER STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_FRAMES_PER_BUFFER_DEFINE
+        "#define FRAMES_PER_BUFFER ${PORTABLE_FRAMES_PER_BUFFER}")
+else()
+    set(PORTABLE_BUILD_CONFIG_FRAMES_PER_BUFFER_DEFINE
+        "/* FRAMES_PER_BUFFER comes from the source fallback when not set in CMake. */")
+endif()
+
+if(NOT PORTABLE_INPUT_PORT STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_INPUT_PORT_DEFINE
+        "#define INPUT_PORT_1BASED ${PORTABLE_INPUT_PORT}")
+else()
+    set(PORTABLE_BUILD_CONFIG_INPUT_PORT_DEFINE
+        "/* INPUT_PORT_1BASED comes from the source fallback when not set in CMake. */")
+endif()
+
+if(NOT PORTABLE_OUTPUT_PORT STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_OUTPUT_PORT_DEFINE
+        "#define OUTPUT_PORT_1BASED ${PORTABLE_OUTPUT_PORT}")
+else()
+    set(PORTABLE_BUILD_CONFIG_OUTPUT_PORT_DEFINE
+        "/* OUTPUT_PORT_1BASED comes from the source fallback when not set in CMake. */")
+endif()
+
+if(NOT PORTABLE_CORRELATION_THRESHOLD STREQUAL "")
+    set(PORTABLE_BUILD_CONFIG_CORRELATION_THRESHOLD_DEFINE
+        "#define CORRELATION_THRESHOLD ${PORTABLE_CORRELATION_THRESHOLD}")
+else()
+    set(PORTABLE_BUILD_CONFIG_CORRELATION_THRESHOLD_DEFINE
+        "/* CORRELATION_THRESHOLD comes from the source fallback when not set in CMake. */")
+endif()
+
+# Generate one header that carries the build-time configuration into the selected app source.
+configure_file(
+    "${PORTABLE_INCLUDE_DIR}/portable/build_config.h.in"
+    "${PORTABLE_GENERATED_INCLUDE_DIR}/portable/build_config.h"
+    @ONLY)
 
 # Print the chosen app name during configure.
 message(STATUS "portable app: ${PORTABLE_APP_NAME}")
@@ -189,16 +281,10 @@ message(STATUS "selected app language: ${PORTABLE_SELECTED_LANGUAGE}")
 # Print the chosen mock/real backend setting during configure.
 message(STATUS "MOCK=${PORTABLE_USE_MOCK_BOOL}")
 
-# Helper: embed the repo's script and output paths into a target as compile-time macros.
-function(portable_apply_common_path_definitions target)
-    # Embed the output directory path.
-    target_compile_definitions("${target}" PRIVATE
-        PORTABLE_OUTPUT_DIR=\"${PORTABLE_OUTPUT_DIR_PATH}\"
-        PORTABLE_PLOT_SCRIPT=\"${PORTABLE_PLOT_SCRIPT_PATH}\"
-        PORTABLE_CALLBACK_TIMING_VIEW_SCRIPT=\"${PORTABLE_CALLBACK_TIMING_VIEW_SCRIPT_PATH}\"
-        PORTABLE_TOPOLOGY_VIEW_SCRIPT=\"${PORTABLE_TOPOLOGY_VIEW_SCRIPT_PATH}\"
-        PORTABLE_EXACT_CONV_VIEW_SCRIPT=\"${PORTABLE_EXACT_CONV_VIEW_SCRIPT_PATH}\"
-        PORTABLE_DETECT_TIMMING_PLOT_SCRIPT=\"${PORTABLE_DETECT_TIMMING_PLOT_SCRIPT_PATH}\")
+# Helper: make the generated build-config header available to a target.
+function(portable_apply_generated_build_config target)
+    target_include_directories("${target}" PRIVATE
+        "${PORTABLE_GENERATED_INCLUDE_DIR}")
 endfunction()
 
 # Helper: attach either the mock-audio backend or the real PortAudio backend to a target.
@@ -312,8 +398,8 @@ endif()
 
 # Register the one selected executable target from the chosen source file.
 add_executable("${PORTABLE_TARGET_NAME}" "${PORTABLE_SELECTED_SOURCE}")
-# Embed the common repo paths into the selected app.
-portable_apply_common_path_definitions("${PORTABLE_TARGET_NAME}")
+# Make the generated build-config header visible to the selected app.
+portable_apply_generated_build_config("${PORTABLE_TARGET_NAME}")
 # Attach either the mock or real audio backend and define `MOCK` accordingly.
 portable_link_audio_backend("${PORTABLE_TARGET_NAME}")
 
