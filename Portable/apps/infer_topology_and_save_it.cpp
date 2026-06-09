@@ -108,6 +108,7 @@ Restore desktop audio afterwards:
 #include "portable/audio_helpers.h"
 #include "portable/csv_utils.h"
 #include "portable/impulse_response_analysis.h"
+#include "portable/stream_status.h"
 #include "portable/usefull_singnals.h"
 
 struct SweepCaptureData
@@ -117,6 +118,7 @@ struct SweepCaptureData
     int frame_index = 0;
     int max_frames = 0;
     int active_output_channel = 0;
+    PortableStreamStatusSummary stream_status;
 };
 
 static void print_output_sweep_summary(
@@ -290,7 +292,7 @@ static int pa_sweep_callback(
     void *outputBuffer,
     unsigned long framesPerBuffer,
     const PaStreamCallbackTimeInfo *,
-    PaStreamCallbackFlags,
+    PaStreamCallbackFlags statusFlags,
     void *userData)
 {
     SweepCaptureData *data = static_cast<SweepCaptureData *>(userData);
@@ -301,6 +303,8 @@ static int pa_sweep_callback(
     {
         return paAbort;
     }
+
+    data->stream_status.observe(statusFlags);
 
     const int frames_left = data->max_frames - data->frame_index;
     const int frames_to_process =
@@ -601,6 +605,7 @@ int main()
                 std::complex<float>(0.0f, 0.0f))));
     std::vector<std::string> raw_csv_paths;
     raw_csv_paths.reserve(static_cast<size_t>(CHANNELS));
+    PortableStreamStatusSummary total_stream_status;
 
     for (int output_channel = 0; output_channel < CHANNELS; ++output_channel)
     {
@@ -655,6 +660,14 @@ int main()
             recorded,
             sweep_samples,
             output_channel);
+
+        total_stream_status.accumulate_from(data.stream_status);
+        if (data.stream_status.has_any_warnings())
+        {
+            std::cerr << "Callback status warnings for output channel "
+                      << output_channel << ": "
+                      << portable_format_status_summary(data.stream_status) << '\n';
+        }
 
         std::vector<float> played_out(static_cast<size_t>(sweep_samples), 0.0f);
         for (int i = 0; i < sweep_samples; ++i)
@@ -726,6 +739,13 @@ int main()
 
     std::cout << "Saved time-domain matrix: " << time_csv_path << '\n';
     std::cout << "Saved frequency-domain matrix: " << frequency_csv_path << '\n';
+    std::cout << "PortAudio callback status summary: "
+              << portable_format_status_summary(total_stream_status) << '\n';
+    if (total_stream_status.has_any_warnings())
+    {
+        std::cerr << "WARNING: callback xruns/status issues were observed during topology capture. "
+                  << "That can distort the recorded signals and make the inferred impulse responses look bad.\n";
+    }
     std::cout << "Device index: " << device_index << '\n';
     std::cout << "CHANNELS=" << CHANNELS
               << " SAMPLE_RATE=" << SAMPLE_RATE

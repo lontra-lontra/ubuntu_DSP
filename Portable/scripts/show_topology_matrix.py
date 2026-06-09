@@ -21,6 +21,9 @@ except ImportError:
 
 
 HEADER_RE = re.compile(r"^(Re|Im) H input (\d+) <- output (\d+)$")
+TIME_HEADER_RE = re.compile(r"^h input (\d+) <- output (\d+)$")
+PLAYED_HEADER_RE = re.compile(r"^played ch (\d+)$")
+RECORDED_HEADER_RE = re.compile(r"^recorded ch (\d+)$")
 
 
 def parse_frequency_matrix_csv(
@@ -112,6 +115,138 @@ def parse_frequency_matrix_csv(
     return frequency_axis, response_cube, input_labels, output_labels
 
 
+def infer_capture_base_path(csv_path: str | Path) -> Path:
+    resolved_path = Path(csv_path).expanduser()
+    name = resolved_path.name
+    for suffix in ("_frequency_domain_matrix.csv", "_time_domain_matrix.csv"):
+        if name.endswith(suffix):
+            return resolved_path.with_name(name[: -len(suffix)])
+    return resolved_path.with_suffix("")
+
+
+def parse_time_matrix_csv(
+    csv_path: str | Path,
+) -> tuple[np.ndarray, np.ndarray]:
+    resolved_path = Path(csv_path).expanduser()
+    with resolved_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle, delimiter=";")
+        header = next(reader, None)
+        if not header:
+            raise ValueError("Time-domain CSV is empty.")
+        if len(header) < 2:
+            raise ValueError("Time-domain CSV must contain a time column and at least one response.")
+
+        pairs: list[tuple[int, int, int]] = []
+        max_input = -1
+        max_output = -1
+        for column in range(1, len(header)):
+            match = TIME_HEADER_RE.match(header[column].strip())
+            if not match:
+                raise ValueError("Unexpected time-domain response header format.")
+
+            input_index = int(match.group(1))
+            output_index = int(match.group(2))
+            pairs.append((input_index, output_index, column))
+            max_input = max(max_input, input_index)
+            max_output = max(max_output, output_index)
+
+        time_axis_ms: list[float] = []
+        response_columns = {
+            (input_index, output_index): []
+            for input_index, output_index, _ in pairs
+        }
+
+        for row in reader:
+            if not row or not row[0].strip():
+                continue
+
+            time_axis_ms.append(1000.0 * float(row[0]))
+            for input_index, output_index, column in pairs:
+                value = (
+                    float(row[column])
+                    if column < len(row) and row[column].strip()
+                    else np.nan
+                )
+                response_columns[(input_index, output_index)].append(value)
+
+    impulse_cube = np.full(
+        (max_input + 1, max_output + 1, len(time_axis_ms)),
+        np.nan,
+        dtype=float,
+    )
+    for input_index, output_index, _ in pairs:
+        impulse_cube[input_index, output_index, :] = np.asarray(
+            response_columns[(input_index, output_index)],
+            dtype=float,
+        )
+
+    return np.asarray(time_axis_ms, dtype=float), impulse_cube
+
+
+def parse_raw_capture_csv(
+    csv_path: str | Path,
+) -> SimpleNamespace:
+    resolved_path = Path(csv_path).expanduser()
+    with resolved_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle, delimiter=";")
+        header = next(reader, None)
+        if not header:
+            raise ValueError("Raw capture CSV is empty.")
+        if len(header) < 3:
+            raise ValueError("Raw capture CSV must contain time plus played/recorded channels.")
+
+        played_columns: dict[int, int] = {}
+        recorded_columns: dict[int, int] = {}
+        max_channel = -1
+        for column, name in enumerate(header[1:], start=1):
+            played_match = PLAYED_HEADER_RE.match(name.strip())
+            recorded_match = RECORDED_HEADER_RE.match(name.strip())
+            if played_match:
+                channel = int(played_match.group(1))
+                played_columns[channel] = column
+                max_channel = max(max_channel, channel)
+            elif recorded_match:
+                channel = int(recorded_match.group(1))
+                recorded_columns[channel] = column
+                max_channel = max(max_channel, channel)
+
+        if max_channel < 0:
+            raise ValueError("Raw capture CSV contains no played/recorded channel columns.")
+
+        time_axis_ms: list[float] = []
+        played_rows: list[list[float]] = []
+        recorded_rows: list[list[float]] = []
+
+        for row in reader:
+            if not row or not row[0].strip():
+                continue
+
+            padded = row + [""] * (len(header) - len(row))
+            time_axis_ms.append(1000.0 * float(padded[0]))
+
+            played_sample_row = [np.nan] * (max_channel + 1)
+            recorded_sample_row = [np.nan] * (max_channel + 1)
+            for channel, column in played_columns.items():
+                played_sample_row[channel] = (
+                    float(padded[column]) if padded[column].strip() else np.nan
+                )
+            for channel, column in recorded_columns.items():
+                recorded_sample_row[channel] = (
+                    float(padded[column]) if padded[column].strip() else np.nan
+                )
+            played_rows.append(played_sample_row)
+            recorded_rows.append(recorded_sample_row)
+
+    played_matrix = np.asarray(played_rows, dtype=float).T
+    recorded_matrix = np.asarray(recorded_rows, dtype=float).T
+    return SimpleNamespace(
+        time_ms=np.asarray(time_axis_ms, dtype=float),
+        played=played_matrix,
+        recorded=recorded_matrix,
+        path=resolved_path,
+    )
+
+
 def finite_complex_mask(values: np.ndarray) -> np.ndarray:
     return np.isfinite(values.real) & np.isfinite(values.imag)
 
@@ -148,58 +283,150 @@ def strongest_finite_pairs(summary_db: np.ndarray, count: int = 8) -> np.ndarray
 def _draw_selected_pair(
     figure,
     ax_heatmap,
-    ax_magnitude,
-    ax_phase,
+    ax_output_signal,
+    ax_input_signal,
     ax_impulse,
     highlight,
     *,
     input_index: int,
     output_index: int,
     response_cube: np.ndarray,
-    frequency_axis: np.ndarray,
-    valid_frequency_mask: np.ndarray,
-    impulse_sample_count: int,
-    impulse_time_ms: np.ndarray,
+    fallback_impulse_time_ms: np.ndarray,
     input_labels: list[str],
     output_labels: list[str],
     summary_db: np.ndarray,
+    impulse_cube: np.ndarray | None,
+    impulse_time_ms: np.ndarray | None,
+    raw_capture_loader,
 ) -> None:
-    selected_response = response_cube[input_index, output_index, :]
-    selected_finite_mask = finite_complex_mask(selected_response)
-    selected_valid_mask = valid_frequency_mask & selected_finite_mask
-    selected_response_for_impulse = np.where(
-        selected_finite_mask,
-        selected_response,
-        0.0 + 0.0j,
-    )
-    selected_impulse = np.fft.irfft(
-        selected_response_for_impulse,
-        n=impulse_sample_count,
-    )
-
     highlight.set_xy((output_index - 0.5, input_index - 0.5))
 
-    ax_magnitude.clear()
-    ax_phase.clear()
+    ax_output_signal.clear()
+    ax_input_signal.clear()
     ax_impulse.clear()
 
-    ax_magnitude.set_ylabel("Magnitude (dB)")
-    ax_phase.set_ylabel("Phase (deg)")
-    ax_phase.set_xlabel("Frequency (Hz)")
+    ax_output_signal.set_ylabel("Played output")
+    ax_output_signal.set_xlabel("Time (ms)")
+    ax_input_signal.set_ylabel("Recorded input")
+    ax_input_signal.set_xlabel("Time (ms)")
     ax_impulse.set_ylabel("Impulse")
     ax_impulse.set_xlabel("Time (ms)")
-    ax_impulse.set_title("Impulse response")
+    ax_output_signal.set_title(
+        f"{input_labels[input_index]} <- {output_labels[output_index]} | "
+        f"broadband {summary_db[input_index, output_index]:.1f} dB"
+    )
 
-    if not np.any(selected_valid_mask):
-        ax_magnitude.set_title(
-            f"{input_labels[input_index]} <- {output_labels[output_index]} | "
-            "no valid frequency data"
+    raw_capture = raw_capture_loader(output_index)
+    if raw_capture is None:
+        for axis, message in (
+            (ax_output_signal, "Raw capture for this output channel is unavailable."),
+            (ax_input_signal, "Recorded input trace is unavailable."),
+        ):
+            axis.text(
+                0.5,
+                0.5,
+                message,
+                transform=axis.transAxes,
+                va="center",
+                ha="center",
+                bbox={
+                    "facecolor": "#fffaf2",
+                    "edgecolor": "#d6c7b3",
+                    "boxstyle": "round,pad=0.4",
+                },
+            )
+    else:
+        played_signal = raw_capture.played[output_index, :]
+        recorded_signal = raw_capture.recorded[input_index, :]
+        time_axis_ms = raw_capture.time_ms
+
+        ax_output_signal.plot(
+            time_axis_ms,
+            played_signal,
+            color="#0f766e",
+            linewidth=1.8,
         )
-        ax_magnitude.text(
+        ax_input_signal.plot(
+            time_axis_ms,
+            recorded_signal,
+            color="#c2410c",
+            linewidth=1.3,
+        )
+        ax_output_signal.grid(True, alpha=0.22)
+        ax_input_signal.grid(True, alpha=0.22)
+        ax_output_signal.text(
+            0.02,
+            0.96,
+            "\n".join(
+                [
+                    f"Peak: {np.nanmax(np.abs(played_signal)):.3g}",
+                    f"RMS: {np.sqrt(np.nanmean(np.square(played_signal))):.3g}",
+                    f"File: {raw_capture.path.name}",
+                ]
+            ),
+            transform=ax_output_signal.transAxes,
+            va="top",
+            ha="left",
+            bbox={
+                "facecolor": "#fffaf2",
+                "edgecolor": "#d6c7b3",
+                "boxstyle": "round,pad=0.4",
+            },
+        )
+        ax_input_signal.text(
+            0.02,
+            0.96,
+            "\n".join(
+                [
+                    f"Peak: {np.nanmax(np.abs(recorded_signal)):.3g}",
+                    f"RMS: {np.sqrt(np.nanmean(np.square(recorded_signal))):.3g}",
+                    f"Input channel: {input_index}",
+                ]
+            ),
+            transform=ax_input_signal.transAxes,
+            va="top",
+            ha="left",
+            bbox={
+                "facecolor": "#fffaf2",
+                "edgecolor": "#d6c7b3",
+                "boxstyle": "round,pad=0.4",
+            },
+        )
+
+    selected_impulse = None
+    selected_impulse_time_ms = None
+    if (
+        impulse_cube is not None
+        and impulse_time_ms is not None
+        and input_index < impulse_cube.shape[0]
+        and output_index < impulse_cube.shape[1]
+    ):
+        candidate_impulse = impulse_cube[input_index, output_index, :]
+        if np.any(np.isfinite(candidate_impulse)):
+            selected_impulse = candidate_impulse
+            selected_impulse_time_ms = impulse_time_ms
+
+    if selected_impulse is None:
+        selected_response = response_cube[input_index, output_index, :]
+        selected_finite_mask = finite_complex_mask(selected_response)
+        if np.any(selected_finite_mask):
+            selected_response_for_impulse = np.where(
+                selected_finite_mask,
+                selected_response,
+                0.0 + 0.0j,
+            )
+            selected_impulse = np.fft.irfft(
+                selected_response_for_impulse,
+                n=fallback_impulse_time_ms.size,
+            )
+            selected_impulse_time_ms = fallback_impulse_time_ms
+
+    if selected_impulse is None or selected_impulse_time_ms is None:
+        ax_impulse.text(
             0.5,
             0.5,
-            "This channel pair has no finite frequency-response samples.",
-            transform=ax_magnitude.transAxes,
+            "Impulse unavailable",
+            transform=ax_impulse.transAxes,
             va="center",
             ha="center",
             bbox={
@@ -208,14 +435,13 @@ def _draw_selected_pair(
                 "boxstyle": "round,pad=0.4",
             },
         )
-        ax_phase.text(
-            0.5,
-            0.5,
-            "Phase unavailable",
-            transform=ax_phase.transAxes,
-            va="center",
-            ha="center",
-        )
+        figure.canvas.draw_idle()
+        return
+
+    selected_impulse = np.asarray(selected_impulse, dtype=float)
+    selected_impulse_time_ms = np.asarray(selected_impulse_time_ms, dtype=float)
+    finite_impulse_mask = np.isfinite(selected_impulse)
+    if not np.any(finite_impulse_mask):
         ax_impulse.text(
             0.5,
             0.5,
@@ -223,88 +449,38 @@ def _draw_selected_pair(
             transform=ax_impulse.transAxes,
             va="center",
             ha="center",
+            bbox={
+                "facecolor": "#fffaf2",
+                "edgecolor": "#d6c7b3",
+                "boxstyle": "round,pad=0.4",
+            },
         )
         figure.canvas.draw_idle()
         return
 
-    selected_frequency = frequency_axis[selected_valid_mask]
-    selected_magnitude_db = 20.0 * np.log10(
-        np.maximum(np.abs(selected_response[selected_valid_mask]), 1.0e-12)
-    )
-    selected_phase_deg = np.rad2deg(
-        np.unwrap(np.angle(selected_response[selected_valid_mask]))
-    )
-
-    ax_magnitude.semilogx(
-        selected_frequency,
-        selected_magnitude_db,
-        color="#0f766e",
-        linewidth=2.1,
-    )
-    ax_phase.semilogx(
-        selected_frequency,
-        selected_phase_deg,
-        color="#c2410c",
-        linewidth=1.9,
-    )
     ax_impulse.plot(
-        impulse_time_ms,
+        selected_impulse_time_ms,
         selected_impulse,
         color="#1d4ed8",
         linewidth=1.8,
     )
-
-    peak_index = int(np.nanargmax(selected_magnitude_db))
     impulse_peak_index = int(np.nanargmax(np.abs(selected_impulse)))
-    ax_magnitude.scatter(
-        [selected_frequency[peak_index]],
-        [selected_magnitude_db[peak_index]],
-        color="#f97316",
-        s=36,
-        zorder=3,
-    )
     ax_impulse.scatter(
-        [impulse_time_ms[impulse_peak_index]],
+        [selected_impulse_time_ms[impulse_peak_index]],
         [selected_impulse[impulse_peak_index]],
         color="#f97316",
         s=36,
         zorder=3,
     )
-
-    ax_magnitude.grid(True, which="both", alpha=0.22)
-    ax_phase.grid(True, which="both", alpha=0.22)
     ax_impulse.grid(True, alpha=0.22)
-    ax_magnitude.set_title(
-        f"{input_labels[input_index]} <- {output_labels[output_index]} | "
-        f"broadband {summary_db[input_index, output_index]:.1f} dB"
-    )
-    ax_magnitude.text(
-        0.02,
-        0.96,
-        "\n".join(
-            [
-                f"Peak: {selected_magnitude_db[peak_index]:.1f} dB",
-                f"At: {selected_frequency[peak_index]:.1f} Hz",
-                f"Median: {np.nanmedian(selected_magnitude_db):.1f} dB",
-            ]
-        ),
-        transform=ax_magnitude.transAxes,
-        va="top",
-        ha="left",
-        bbox={
-            "facecolor": "#fffaf2",
-            "edgecolor": "#d6c7b3",
-            "boxstyle": "round,pad=0.4",
-        },
-    )
     ax_impulse.text(
         0.02,
         0.96,
         "\n".join(
             [
                 f"Peak: {selected_impulse[impulse_peak_index]:.3g}",
-                f"At: {impulse_time_ms[impulse_peak_index]:.2f} ms",
-                f"RMS: {np.sqrt(np.mean(np.square(selected_impulse))):.3g}",
+                f"At: {selected_impulse_time_ms[impulse_peak_index]:.2f} ms",
+                f"RMS: {np.sqrt(np.nanmean(np.square(selected_impulse))):.3g}",
             ]
         ),
         transform=ax_impulse.transAxes,
@@ -355,10 +531,38 @@ def plot_topology_matrix(
         sample_rate_estimate = frequency_axis[1] * impulse_sample_count
     else:
         sample_rate_estimate = float(impulse_sample_count)
-    impulse_time_ms = (
+    fallback_impulse_time_ms = (
         1000.0 * np.arange(impulse_sample_count, dtype=float)
         / max(sample_rate_estimate, 1.0)
     )
+
+    base_path = infer_capture_base_path(resolved_path)
+    time_matrix_path = Path(f"{base_path}_time_domain_matrix.csv")
+    impulse_time_ms = None
+    impulse_cube = None
+    if time_matrix_path.exists() and time_matrix_path.stat().st_size > 0:
+        try:
+            impulse_time_ms, impulse_cube = parse_time_matrix_csv(time_matrix_path)
+        except ValueError as ex:
+            print(f"Warning: could not load time-domain matrix {time_matrix_path.name}: {ex}")
+
+    raw_capture_cache: dict[int, SimpleNamespace | None] = {}
+
+    def load_raw_capture_for_output(output_index: int) -> SimpleNamespace | None:
+        if output_index in raw_capture_cache:
+            return raw_capture_cache[output_index]
+
+        raw_csv_path = Path(f"{base_path}_raw_capture_output_{output_index}.csv")
+        if not raw_csv_path.exists() or raw_csv_path.stat().st_size == 0:
+            raw_capture_cache[output_index] = None
+            return None
+
+        try:
+            raw_capture_cache[output_index] = parse_raw_capture_csv(raw_csv_path)
+        except ValueError as ex:
+            print(f"Warning: could not load raw capture {raw_csv_path.name}: {ex}")
+            raw_capture_cache[output_index] = None
+        return raw_capture_cache[output_index]
 
     plt.rcParams.update(
         {
@@ -373,16 +577,16 @@ def plot_topology_matrix(
         }
     )
 
-    figure = plt.figure(figsize=(14.5, 9.2), constrained_layout=True)
+    figure = plt.figure(figsize=(14.5, 10.2), constrained_layout=True)
     grid = figure.add_gridspec(
         3,
         2,
         width_ratios=[1.05, 1.25],
-        height_ratios=[1.0, 1.0, 0.95],
+        height_ratios=[1.0, 1.0, 1.0],
     )
     ax_heatmap = figure.add_subplot(grid[:, 0])
-    ax_magnitude = figure.add_subplot(grid[0, 1])
-    ax_phase = figure.add_subplot(grid[1, 1], sharex=ax_magnitude)
+    ax_output_signal = figure.add_subplot(grid[0, 1])
+    ax_input_signal = figure.add_subplot(grid[1, 1])
     ax_impulse = figure.add_subplot(grid[2, 1])
 
     heatmap = ax_heatmap.imshow(
@@ -406,7 +610,7 @@ def plot_topology_matrix(
     )
     ax_heatmap.set_xlabel("Output channel")
     ax_heatmap.set_ylabel("Input channel")
-    ax_heatmap.set_title("Topology heatmap\n(click a cell to inspect frequency response)")
+    ax_heatmap.set_title("Topology heatmap\n(click a cell to inspect one channel pair)")
     ax_heatmap.set_xticks(np.arange(-0.5, len(output_labels), 1), minor=True)
     ax_heatmap.set_yticks(np.arange(-0.5, len(input_labels), 1), minor=True)
     ax_heatmap.grid(which="minor", color="#ffffff", linewidth=0.35, alpha=0.18)
@@ -452,15 +656,12 @@ def plot_topology_matrix(
             },
         )
 
-    ax_magnitude.set_ylabel("Magnitude (dB)")
-    ax_phase.set_ylabel("Phase (deg)")
-    ax_phase.set_xlabel("Frequency (Hz)")
+    ax_output_signal.set_ylabel("Played output")
+    ax_output_signal.set_xlabel("Time (ms)")
+    ax_input_signal.set_ylabel("Recorded input")
+    ax_input_signal.set_xlabel("Time (ms)")
     ax_impulse.set_ylabel("Impulse")
     ax_impulse.set_xlabel("Time (ms)")
-
-    valid_frequency_mask = frequency_axis > 0.0
-    if not np.any(valid_frequency_mask):
-        valid_frequency_mask = np.ones_like(frequency_axis, dtype=bool)
 
     def on_click(event) -> None:
         if event.inaxes is not ax_heatmap or event.xdata is None or event.ydata is None:
@@ -477,20 +678,20 @@ def plot_topology_matrix(
         _draw_selected_pair(
             figure,
             ax_heatmap,
-            ax_magnitude,
-            ax_phase,
+            ax_output_signal,
+            ax_input_signal,
             ax_impulse,
             highlight,
             input_index=input_index,
             output_index=output_index,
             response_cube=response_cube,
-            frequency_axis=frequency_axis,
-            valid_frequency_mask=valid_frequency_mask,
-            impulse_sample_count=impulse_sample_count,
-            impulse_time_ms=impulse_time_ms,
+            fallback_impulse_time_ms=fallback_impulse_time_ms,
             input_labels=input_labels,
             output_labels=output_labels,
             summary_db=summary_db,
+            impulse_cube=impulse_cube,
+            impulse_time_ms=impulse_time_ms,
+            raw_capture_loader=load_raw_capture_for_output,
         )
 
     figure.canvas.mpl_connect("button_press_event", on_click)
@@ -508,7 +709,7 @@ def plot_topology_matrix(
     )
 
     figure.suptitle(
-        f"Frequency-domain topology viewer\n{resolved_path.name}",
+        f"Topology viewer\n{resolved_path.name}",
         fontsize=14,
         fontweight="semibold",
     )
@@ -518,8 +719,8 @@ def plot_topology_matrix(
 
     return figure, {
         "heatmap": ax_heatmap,
-        "magnitude": ax_magnitude,
-        "phase": ax_phase,
+        "output_signal": ax_output_signal,
+        "input_signal": ax_input_signal,
         "impulse": ax_impulse,
     }
 
