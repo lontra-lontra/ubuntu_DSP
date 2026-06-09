@@ -280,6 +280,31 @@ def strongest_finite_pairs(summary_db: np.ndarray, count: int = 8) -> np.ndarray
     return np.column_stack(np.unravel_index(strongest_flat, summary_db.shape))
 
 
+def compute_raw_input_peak_matrix(
+    output_count: int,
+    input_count: int,
+    raw_capture_loader,
+) -> np.ndarray:
+    peak_matrix = np.full((input_count, output_count), np.nan, dtype=float)
+
+    for output_index in range(output_count):
+        raw_capture = raw_capture_loader(output_index)
+        if raw_capture is None:
+            continue
+
+        available_input_count = min(input_count, raw_capture.recorded.shape[0])
+        for input_index in range(available_input_count):
+            recorded_signal = raw_capture.recorded[input_index, :]
+            finite_mask = np.isfinite(recorded_signal)
+            if not np.any(finite_mask):
+                continue
+            peak_matrix[input_index, output_index] = np.nanmax(
+                np.abs(recorded_signal[finite_mask])
+            )
+
+    return peak_matrix
+
+
 def _draw_selected_pair(
     figure,
     ax_heatmap,
@@ -294,7 +319,7 @@ def _draw_selected_pair(
     fallback_impulse_time_ms: np.ndarray,
     input_labels: list[str],
     output_labels: list[str],
-    summary_db: np.ndarray,
+    raw_peak_matrix: np.ndarray,
     impulse_cube: np.ndarray | None,
     impulse_time_ms: np.ndarray | None,
     raw_capture_loader,
@@ -312,7 +337,16 @@ def _draw_selected_pair(
     ax_impulse.set_ylabel("Impulse")
     ax_impulse.set_xlabel("Time (ms)")
     ax_output_signal.set_title(f"{output_labels[output_index]} played signal")
-    ax_input_signal.set_title(f"{input_labels[input_index]} recorded signal")
+    raw_peak_text = ""
+    if (
+        input_index < raw_peak_matrix.shape[0]
+        and output_index < raw_peak_matrix.shape[1]
+        and np.isfinite(raw_peak_matrix[input_index, output_index])
+    ):
+        raw_peak_text = f" | peak {raw_peak_matrix[input_index, output_index]:.3g}"
+    ax_input_signal.set_title(
+        f"{input_labels[input_index]} recorded signal{raw_peak_text}"
+    )
     ax_impulse.set_title(f"Impulse response for {input_labels[input_index]} <- {output_labels[output_index]}")
 
     raw_capture = raw_capture_loader(output_index)
@@ -512,26 +546,7 @@ def plot_topology_matrix(
     frequency_axis, response_cube, input_labels, output_labels = (
         parse_frequency_matrix_csv(resolved_path)
     )
-    summary_db = compute_summary_matrix(response_cube)
-
-    valid_pair_mask = np.any(finite_complex_mask(response_cube), axis=2)
-    invalid_pairs = np.column_stack(np.where(~valid_pair_mask))
-    if invalid_pairs.size > 0:
-        preview_pairs = ", ".join(
-            f"in {input_index} <- out {output_index}"
-            for input_index, output_index in invalid_pairs[:8]
-        )
-        suffix = " ..." if len(invalid_pairs) > 8 else ""
-        print(
-            "Warning: "
-            f"{len(invalid_pairs)} channel pair(s) contain no finite "
-            f"frequency-response data: {preview_pairs}{suffix}"
-        )
-
-    if not np.any(np.isfinite(summary_db)):
-        raise ValueError(
-            "The frequency-domain matrix contains no finite channel-pair summary values."
-        )
+    frequency_summary_db = compute_summary_matrix(response_cube)
 
     impulse_sample_count = max(1, 2 * (frequency_axis.size - 1))
     if frequency_axis.size > 1 and frequency_axis[1] > 0.0:
@@ -571,6 +586,36 @@ def plot_topology_matrix(
             raw_capture_cache[output_index] = None
         return raw_capture_cache[output_index]
 
+    raw_peak_matrix = compute_raw_input_peak_matrix(
+        response_cube.shape[1],
+        response_cube.shape[0],
+        load_raw_capture_for_output,
+    )
+    selector_matrix = raw_peak_matrix
+    selector_label = "Recorded input peak"
+
+    if not np.any(np.isfinite(selector_matrix)):
+        selector_matrix = frequency_summary_db
+        selector_label = "Frequency-response summary (dB)"
+        valid_pair_mask = np.any(finite_complex_mask(response_cube), axis=2)
+        invalid_pairs = np.column_stack(np.where(~valid_pair_mask))
+        if invalid_pairs.size > 0:
+            preview_pairs = ", ".join(
+                f"in {input_index} <- out {output_index}"
+                for input_index, output_index in invalid_pairs[:8]
+            )
+            suffix = " ..." if len(invalid_pairs) > 8 else ""
+            print(
+                "Warning: "
+                f"{len(invalid_pairs)} channel pair(s) contain no finite "
+                f"frequency-response data: {preview_pairs}{suffix}"
+            )
+
+    if not np.any(np.isfinite(selector_matrix)):
+        raise ValueError(
+            "The topology viewer could not find any finite raw captures or frequency-response summaries."
+        )
+
     plt.rcParams.update(
         {
             "axes.facecolor": "#fcfaf7",
@@ -597,13 +642,13 @@ def plot_topology_matrix(
     ax_impulse = figure.add_subplot(grid[2, 1])
 
     heatmap = ax_heatmap.imshow(
-        summary_db,
+        selector_matrix,
         origin="lower",
         cmap="viridis",
         aspect="equal",
     )
     colorbar = figure.colorbar(heatmap, ax=ax_heatmap, pad=0.03, shrink=0.88)
-    colorbar.set_label("Summary strength (dB)")
+    colorbar.set_label(selector_label)
 
     input_step = max(1, len(input_labels) // 8)
     output_step = max(1, len(output_labels) // 8)
@@ -633,7 +678,7 @@ def plot_topology_matrix(
     )
     ax_heatmap.add_patch(highlight)
 
-    strongest_pairs = strongest_finite_pairs(summary_db)
+    strongest_pairs = strongest_finite_pairs(selector_matrix)
     if strongest_pairs.size > 0:
         ax_heatmap.scatter(
             strongest_pairs[:, 1],
@@ -676,7 +721,7 @@ def plot_topology_matrix(
             fallback_impulse_time_ms=fallback_impulse_time_ms,
             input_labels=input_labels,
             output_labels=output_labels,
-            summary_db=summary_db,
+            raw_peak_matrix=raw_peak_matrix,
             impulse_cube=impulse_cube,
             impulse_time_ms=impulse_time_ms,
             raw_capture_loader=load_raw_capture_for_output,
@@ -724,8 +769,36 @@ def display_topology_matrix_widget(csv_path: str | Path):
     frequency_axis, response_cube, input_labels, output_labels = (
         parse_frequency_matrix_csv(resolved_path)
     )
-    summary_db = compute_summary_matrix(response_cube)
-    strongest_pairs_array = strongest_finite_pairs(summary_db)
+    base_path = infer_capture_base_path(resolved_path)
+    raw_capture_cache: dict[int, SimpleNamespace | None] = {}
+
+    def load_raw_capture_for_output(output_index: int) -> SimpleNamespace | None:
+        if output_index in raw_capture_cache:
+            return raw_capture_cache[output_index]
+
+        raw_csv_path = Path(f"{base_path}_raw_capture_output_{output_index}.csv")
+        if not raw_csv_path.exists() or raw_csv_path.stat().st_size == 0:
+            raw_capture_cache[output_index] = None
+            return None
+
+        try:
+            raw_capture_cache[output_index] = parse_raw_capture_csv(raw_csv_path)
+        except ValueError:
+            raw_capture_cache[output_index] = None
+        return raw_capture_cache[output_index]
+
+    raw_peak_matrix = compute_raw_input_peak_matrix(
+        response_cube.shape[1],
+        response_cube.shape[0],
+        load_raw_capture_for_output,
+    )
+    selector_matrix = raw_peak_matrix
+    selector_label = "peak"
+    if not np.any(np.isfinite(selector_matrix)):
+        selector_matrix = compute_summary_matrix(response_cube)
+        selector_label = "summary dB"
+
+    strongest_pairs_array = strongest_finite_pairs(selector_matrix)
     strongest_pairs = [
         (int(input_index), int(output_index))
         for input_index, output_index in strongest_pairs_array
@@ -751,7 +824,7 @@ def display_topology_matrix_widget(csv_path: str | Path):
         options=[
             (
                 f"in {input_index} <- out {output_index} "
-                f"({summary_db[input_index, output_index]:.1f} dB)",
+                f"({selector_matrix[input_index, output_index]:.3g} {selector_label})",
                 (input_index, output_index),
             )
             for input_index, output_index in strongest_pairs

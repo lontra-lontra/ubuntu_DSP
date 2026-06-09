@@ -1,6 +1,6 @@
 /*
 Build from repo root:
-  direct machine:
+  direct machine:                                                                                                                                                     MADIface USB (24285073): Audio (hw:2,0)
     cmake -S Portable -B Portable/build -G Ninja -DPORTABLE_APP=infer_topology_and_save_it -DPORTABLE_USE_MOCK=OFF -DPORTABLE_ENABLE_JACK=OFF -DPORTABLE_DEVICE_NAME="MADIface USB (24285073): Audio (hw:2,0)" -DPORTABLE_SAMPLE_RATE=44100 -DPORTABLE_FRAMES_PER_BUFFER=32
     cmake --build Portable/build --target portable_infer_topology_and_save_it --parallel
     ./Portable/build/portable_infer_topology_and_save_it
@@ -283,7 +283,7 @@ static float output_sample_for_channel(
         chirp_total_period_seconds(),
         chirp_silence_time(),
         20.0f,
-        20000.0f,
+        10000.0f,
         chirp_window_time()) * AMPLITUDE;
 }
 
