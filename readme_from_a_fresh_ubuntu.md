@@ -111,7 +111,9 @@ EOF
 
 This is a normal-user permission change for JACK. It is not a reason to run `jackd` as root.
 
-Then log out and log back in before testing JACK again.
+Then do a full log out and log back in before testing JACK again.
+
+Opening a new terminal tab is not enough. If you are using SSH, disconnect and reconnect. If you want the blunt reliable version, just reboot once.
 
 Optional check after logging back in:
 
@@ -121,6 +123,17 @@ ulimit -l
 ```
 
 `ulimit -r` should now allow a positive realtime priority instead of `0`.
+
+If `ulimit -r` is still `0`, the limits were not applied to that login session. Check:
+
+```bash
+cat /etc/security/limits.d/95-jack-realtime.conf
+grep pam_limits /etc/pam.d/common-session /etc/pam.d/common-session-noninteractive
+```
+
+You want to see your username in the first file, and `pam_limits.so` referenced in the PAM session files.
+
+If `ulimit -l` is still finite instead of `unlimited`, that is the same kind of problem: the login-session limits did not reload yet.
 
 ## 7. Enter the Nix shell
 
