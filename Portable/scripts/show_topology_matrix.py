@@ -311,10 +311,9 @@ def _draw_selected_pair(
     ax_input_signal.set_xlabel("Time (ms)")
     ax_impulse.set_ylabel("Impulse")
     ax_impulse.set_xlabel("Time (ms)")
-    ax_output_signal.set_title(
-        f"{input_labels[input_index]} <- {output_labels[output_index]} | "
-        f"broadband {summary_db[input_index, output_index]:.1f} dB"
-    )
+    ax_output_signal.set_title(f"{output_labels[output_index]} played signal")
+    ax_input_signal.set_title(f"{input_labels[input_index]} recorded signal")
+    ax_impulse.set_title(f"Impulse response for {input_labels[input_index]} <- {output_labels[output_index]}")
 
     raw_capture = raw_capture_loader(output_index)
     if raw_capture is None:
@@ -345,15 +344,23 @@ def _draw_selected_pair(
             played_signal,
             color="#0f766e",
             linewidth=1.8,
+            label=f"{output_labels[output_index]} played",
         )
         ax_input_signal.plot(
             time_axis_ms,
             recorded_signal,
             color="#c2410c",
             linewidth=1.3,
+            label=f"{input_labels[input_index]} recorded",
         )
+        x_min = float(time_axis_ms[0]) if time_axis_ms.size else 0.0
+        x_max = float(time_axis_ms[-1]) if time_axis_ms.size else 0.0
+        ax_output_signal.set_xlim(x_min, x_max)
+        ax_input_signal.set_xlim(x_min, x_max)
         ax_output_signal.grid(True, alpha=0.22)
         ax_input_signal.grid(True, alpha=0.22)
+        ax_output_signal.legend(loc="upper right")
+        ax_input_signal.legend(loc="upper right")
         ax_output_signal.text(
             0.02,
             0.96,
@@ -361,7 +368,7 @@ def _draw_selected_pair(
                 [
                     f"Peak: {np.nanmax(np.abs(played_signal)):.3g}",
                     f"RMS: {np.sqrt(np.nanmean(np.square(played_signal))):.3g}",
-                    f"File: {raw_capture.path.name}",
+                    f"Time window: {x_min:.1f} to {x_max:.1f} ms",
                 ]
             ),
             transform=ax_output_signal.transAxes,
@@ -380,7 +387,7 @@ def _draw_selected_pair(
                 [
                     f"Peak: {np.nanmax(np.abs(recorded_signal)):.3g}",
                     f"RMS: {np.sqrt(np.nanmean(np.square(recorded_signal))):.3g}",
-                    f"Input channel: {input_index}",
+                    f"Output channel: {output_index}",
                 ]
             ),
             transform=ax_input_signal.transAxes,
@@ -586,7 +593,7 @@ def plot_topology_matrix(
     )
     ax_heatmap = figure.add_subplot(grid[:, 0])
     ax_output_signal = figure.add_subplot(grid[0, 1])
-    ax_input_signal = figure.add_subplot(grid[1, 1])
+    ax_input_signal = figure.add_subplot(grid[1, 1], sharex=ax_output_signal)
     ax_impulse = figure.add_subplot(grid[2, 1])
 
     heatmap = ax_heatmap.imshow(
@@ -596,7 +603,7 @@ def plot_topology_matrix(
         aspect="equal",
     )
     colorbar = figure.colorbar(heatmap, ax=ax_heatmap, pad=0.03, shrink=0.88)
-    colorbar.set_label("Broadband magnitude (dB)")
+    colorbar.set_label("Summary strength (dB)")
 
     input_step = max(1, len(input_labels) // 8)
     output_step = max(1, len(output_labels) // 8)
@@ -610,7 +617,7 @@ def plot_topology_matrix(
     )
     ax_heatmap.set_xlabel("Output channel")
     ax_heatmap.set_ylabel("Input channel")
-    ax_heatmap.set_title("Topology heatmap\n(click a cell to inspect one channel pair)")
+    ax_heatmap.set_title("Pair selector\n(click a cell to inspect one channel pair)")
     ax_heatmap.set_xticks(np.arange(-0.5, len(output_labels), 1), minor=True)
     ax_heatmap.set_yticks(np.arange(-0.5, len(input_labels), 1), minor=True)
     ax_heatmap.grid(which="minor", color="#ffffff", linewidth=0.35, alpha=0.18)
@@ -635,25 +642,6 @@ def plot_topology_matrix(
             facecolors="none",
             edgecolors="#f8fafc",
             linewidths=0.9,
-        )
-        strongest_lines = [
-            f"{rank + 1}. in {input_index} <- out {output_index}: "
-            f"{summary_db[input_index, output_index]:.1f} dB"
-            for rank, (input_index, output_index) in enumerate(strongest_pairs)
-        ]
-        ax_heatmap.text(
-            1.03,
-            0.02,
-            "Strongest pairs\n" + "\n".join(strongest_lines),
-            transform=ax_heatmap.transAxes,
-            va="bottom",
-            ha="left",
-            fontsize=9,
-            bbox={
-                "facecolor": "#fffaf2",
-                "edgecolor": "#d6c7b3",
-                "boxstyle": "round,pad=0.45",
-            },
         )
 
     ax_output_signal.set_ylabel("Played output")

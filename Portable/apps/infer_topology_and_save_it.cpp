@@ -75,7 +75,7 @@ Restore desktop audio afterwards:
 #endif
 
 #ifndef SILENCE_BETWEEN_CHIRPS_SECONDS
-#define SILENCE_BETWEEN_CHIRPS_SECONDS 1.0f
+#define SILENCE_BETWEEN_CHIRPS_SECONDS 0.1f
 #endif
 
 #ifndef CHIRP_INCREASE_AND_DECREASE_TIME_SECONDS
@@ -603,8 +603,6 @@ int main()
             std::vector<std::complex<float>>(
                 static_cast<size_t>(fft_bins),
                 std::complex<float>(0.0f, 0.0f))));
-    std::vector<std::string> raw_csv_paths;
-    raw_csv_paths.reserve(static_cast<size_t>(CHANNELS));
     PortableStreamStatusSummary total_stream_status;
 
     for (int output_channel = 0; output_channel < CHANNELS; ++output_channel)
@@ -715,7 +713,6 @@ int main()
             return 1;
         }
 
-        raw_csv_paths.push_back(raw_csv_path);
         std::cout << "Saved raw capture: " << raw_csv_path << '\n';
     }
 
@@ -757,15 +754,6 @@ int main()
               << " PURE_CHIRP_TIME_SECONDS=" << PURE_CHIRP_TIME_SECONDS
               << '\n';
 
-    for (size_t output_channel = 0; output_channel < raw_csv_paths.size(); ++output_channel)
-    {
-        std::cout << "Raw plot command (output " << output_channel << "): "
-                  << build_python_command(PORTABLE_PLOT_SCRIPT, raw_csv_paths[output_channel])
-                  << '\n';
-    }
-
-    std::cout << "Impulse plot command: "
-              << build_python_command(PORTABLE_PLOT_SCRIPT, time_csv_path) << '\n';
     std::cout << "Topology viewer command: "
               << build_python_command(PORTABLE_TOPOLOGY_VIEW_SCRIPT, frequency_csv_path)
               << '\n';
