@@ -28,9 +28,8 @@ Prepare JACK for direct hardware access:
   systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
   killall pipewire pipewire-pulse wireplumber
 
-Start JACK:
+Start JACK in another terminal and leave it running:
   jackd -d alsa -d hw:2,0 -r 44100 -p 32 -n 3
-  jack_lsp
 
 Restore desktop audio afterwards:
   killall jackd

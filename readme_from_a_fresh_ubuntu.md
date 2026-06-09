@@ -98,11 +98,37 @@ sh <(curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install) --daemon
 
 Then start a fresh login shell or log out and back in.
 
-## 6. Enter the Nix shell
+## 6. Give JACK and your user realtime priority
+
+If `jackd` prints something like `Cannot use real-time scheduling (RR/10) (1: Operation not permitted)`, give your normal user permission to request realtime priority and lock memory:
+
+```bash
+sudo tee /etc/security/limits.d/95-jack-realtime.conf >/dev/null <<EOF
+$(id -un) - rtprio 95
+$(id -un) - memlock unlimited
+EOF
+```
+
+This is a normal-user permission change for JACK. It is not a reason to run `jackd` as root.
+
+Then log out and log back in before testing JACK again.
+
+Optional check after logging back in:
+
+```bash
+ulimit -r
+ulimit -l
+```
+
+`ulimit -r` should now allow a positive realtime priority instead of `0`.
+
+## 7. Enter the Nix shell
 
 ```bash
 nix --extra-experimental-features 'nix-command flakes' develop
 ```
+
+If you change `flake.nix` later, exit the old shell and run that command again before expecting new tools like `jackd` to appear.
 
 The `flake.nix` in this repo gives you:
 
@@ -112,10 +138,10 @@ The `flake.nix` in this repo gives you:
 - Python with `numpy` and `matplotlib`
 - `fftw3f`
 - ALSA development files
-- JACK libraries and tools such as `jackd`
+- JACK libraries plus the `jackd` server tool
 - a CUDA toolkit path suitable for `find_package(CUDAToolkit)`
 
-## 7. Validate the installations
+## 8. Validate the installations
 
 Run these after entering the Nix shell:
 
@@ -123,7 +149,7 @@ Run these after entering the Nix shell:
 cmake --version
 ninja --version
 pkg-config --modversion fftw3f
-jackd --version
+command -v jackd
 python3 -c "import numpy, matplotlib; print(numpy.__version__)"
 echo "$CUDAToolkit_ROOT"
 echo "$CUDACXX"
@@ -133,7 +159,7 @@ nvidia-smi
 
 If those commands work, your shell, CUDA toolkit path, Python packages, FFTW, and driver stack are in the expected state.
 
-## 8. Pick an app and follow the commands at the top of its source file
+## 9. Pick an app and follow the commands at the top of its source file
 
 If `Portable/build` came from another machine, another repo path, or an old configuration, reset it first:
 
@@ -156,7 +182,7 @@ Examples:
 - [Portable/apps/simple_cuda_naive_convolution.cu](/home/ian/ubuntu_DSP/Portable/apps/simple_cuda_naive_convolution.cu:1)
 - [Portable/apps/simple_cuda_less_naive_convolution.cu](/home/ian/ubuntu_DSP/Portable/apps/simple_cuda_less_naive_convolution.cu:1)
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### `nvidia-smi` fails
 
@@ -236,7 +262,7 @@ cmake --build Portable/build --target portable_sound_device_query --parallel
 
 and confirm that the ALSA device you expect is visible through PortAudio.
 
-## 10. Extra: update the repo later
+## 11. Extra: update the repo later
 
 ```bash
 git fetch origin
@@ -245,7 +271,7 @@ git reset --hard origin/main
 
 That discards local changes and makes the working tree match `origin/main`.
 
-## 11. Optional: rerun the Nix shell
+## 12. Optional: rerun the Nix shell
 
 If you pulled changes to `flake.nix`, changed machines, or your shell environment looks stale, exit the current shell and enter it again:
 
