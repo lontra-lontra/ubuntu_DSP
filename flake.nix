@@ -31,6 +31,7 @@
         buildInputs = [
           pkgs.alsa-lib
           pkgs.fftwFloat
+          pkgs.jack2
         ];
 
         shellHook = ''
